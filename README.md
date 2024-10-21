@@ -8,60 +8,53 @@ A simple WebSocket client library implemented in C for Windows using Winsock2. T
 - **Message Sending**: Supports sending text and binary messages.
 - **Message Receiving**: Handles incoming messages from the server.
 - **Connection Management**: Manages connection states and gracefully closes connections.
-- **Hexadecimal Data Display**: Utility function to print data in hexadecimal format.
 
-## Files
+## Project Structure
 
-- [`ws_lib.c`](https://gitlab01.dcservices.in/contribute/to-c/mws-c/-/blob/main/ws_lib.c): Implementation of the WebSocket library.
-- [`ws_lib.h`](https://gitlab01.dcservices.in/contribute/to-c/mws-c/-/blob/main/ws_lib.h): Header file for the WebSocket library.
-- [`example_usage.c`](https://gitlab01.dcservices.in/contribute/to-c/mws-c/-/blob/main/example_usage.c): Example program demonstrating how to use the WebSocket library.
-- [`build/build_inst_ws_lib.txt`](https://gitlab01.dcservices.in/contribute/to-c/mws-c/-/blob/main/build/build_inst_ws_lib.txt): Build instructions for compiling the library and example.
+This project is a Visual Studio solution containing two projects:
+
+1. **mws_lib**: A static library project for the WebSocket implementation.
+2. **test-mws**: A test project to demonstrate the usage of the WebSocket library.
+
+### Key Files
+
+- `mws_lib.c` and `mws_lib.h`: Implementation and header files for the WebSocket library.
+- `test-mws/test-mws.c`: Example program demonstrating how to use the WebSocket library.
+- `mws_lib.sln`: Visual Studio solution file.
 
 ## Build Instructions
 
 ### Prerequisites
 
-- **Windows OS**: The library is designed for Windows platforms yet.
-- **C Compiler**: Microsoft Visual C++ (`cl.exe`) is required. Make sure it's available in your system's PATH.
-- **Developer command prompt for VS**: run the below commands in this command prompt. 
+- **Windows OS**: The library is designed for Windows platforms.
+- **Visual Studio**: This project uses Visual Studio for building. Ensure you have a recent version installed.
 
 ### Steps
 
-1. **Compile the WebSocket Library**
+1. **Open the Solution**
+   - Open `mws_lib.sln` in Visual Studio.
 
-    ```bash
-    cl /c ws_lib.c
-    ```
+2. **Build the Library**
+   - Right-click on the `mws_lib` project in the Solution Explorer.
+   - Select "Build" to compile the static library.
 
-    This command compiles `ws_lib.c` into an object file `ws_lib.obj`.
+3. **Build the Test Program**
+   - Right-click on the `test-mws` project in the Solution Explorer.
+   - Select "Build" to compile the test program.
 
-2. **Create the Static Library**
-
-    ```bash
-    lib ws_lib.obj
-    ```
-
-    This command creates a static library `ws_lib.lib` from the compiled object file.
-
-3. **Compile the Example Usage Program**
-
-    ```bash
-    cl example_usage.c ws_lib.lib
-    ```
-
-    This command compiles `example_usage.c` and links it with `ws_lib.lib` to create the executable `example_usage.exe`.
-
-4. **Run the Example**
-
-    ```bash
-    example_usage.exe
-    ```
-
-    Execute the compiled program to see the WebSocket client in action.
+4. **Run the Test Program**
+   - Right-click on the `test-mws` project.
+   - Select "Set as Startup Project".
+   - Press F5 or click "Start Debugging" to run the program.
 
 ## Usage
 
-Refer to [`example_usage.c`](c:example_usage.c) for a comprehensive example of how to initialize the library, establish a connection, send and receive messages, and clean up resources.
+Refer to `test-mws/test-mws.c` for a comprehensive example of how to initialize the library, establish a connection, send and receive messages, and clean up resources.
+
+## Additional Files
+
+- `server-2.py`: A Python script, likely for testing purposes (server implementation).
+
 
 ## License
 
