@@ -20,11 +20,11 @@
 
 // WebSocket context structure
 struct ws_ctx {
-    SOCKET socket;
-    ws_state state;
-    char* recv_buffer;
-    size_t recv_buffer_size;
-    size_t recv_buffer_len;
+    SOCKET socket;        // Socket handle for the WebSocket connection
+    ws_state state;       // Current state of the WebSocket connection
+    char* recv_buffer;    // Buffer to store received data
+    size_t recv_buffer_size;  // Total size of the receive buffer
+    size_t recv_buffer_len;   // Current length of data in the receive buffer
 };
 
 // Base64 encoding table
@@ -169,7 +169,15 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
     // Note: sizeof(port_str) is 6, which allows for up to 5 digits plus null terminator
     // This covers all valid port numbers (0-65535)
 
+    // Resolve the host name to an IP address and get address information
+    // host: the hostname to resolve
+    // port_str: the port number as a string
+    // hints: specifies the type of socket and other options
+    // result: will contain the resulting address information
+    // Returns 0 on success, non-zero on failure
     if (getaddrinfo(host, port_str, &hints, &result) != 0) {
+        // If getaddrinfo fails, it means we couldn't resolve the hostname
+        // or there was an error getting the address information
         return -1;
     }
 
@@ -205,55 +213,69 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
 }
 
 // Generate a random 32-bit mask for WebSocket frames
+    // This function generates a random 32-bit mask for WebSocket frames
+    // It combines four random numbers to create a single 32-bit value
+    
+    // Example:
+    // Let's say rand() returns these values in sequence: 
+    // 0x3A (58), 0xF2 (242), 0x7B (123), 0xC4 (196)
+    // Step 1: 0x3A << 24 = 0x3A000000
+    // Step 2: 0xF2 << 16 = 0x00F20000
+    // Step 3: 0x7B << 8  = 0x00007B00
+    // Step 4: 0xC4       = 0x000000C4
+    // Combining these with bitwise OR:
+    // 0x3A000000 | 0x00F20000 | 0x00007B00 | 0x000000C4 = 0x3AF27BC4
 static uint32_t generate_mask() {
+    
     return ((uint32_t)rand() << 24) | ((uint32_t)rand() << 16) | ((uint32_t)rand() << 8) | (uint32_t)rand();
 }
 
 // Send data over WebSocket
 int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
+    // Check if the WebSocket connection is in the OPEN state
     if (ctx->state != WS_STATE_OPEN) {
-        return -1;
+        return -1;  // Return error if not in OPEN state
     }
 
-    // Construct WebSocket frame
+    // Prepare variables for constructing the WebSocket frame
     uint8_t header[14];  // Maximum header size (2 + 8 + 4)
-    size_t header_size = 2;
-    uint32_t mask = generate_mask();
+    size_t header_size = 2;  // Initial header size (FIN + opcode, and mask bit + payload length)
+    uint32_t mask = generate_mask();  // Generate a random 32-bit mask
 
-    // Set FIN bit and opcode
+    // Set FIN bit (1) and opcode in the first byte of the header
     header[0] = 0x80 | (opcode & 0x0F);
     
-    // Set payload length and masking bit
+    // Set the payload length and masking bit in the second byte (and potentially more)
     if (length <= 125) {
-        header[1] = 0x80 | length;
+        header[1] = 0x80 | length;  // Use 7-bit length field
     } else if (length <= 65535) {
-        header[1] = 0x80 | 126;
-        header[2] = (length >> 8) & 0xFF;
-        header[3] = length & 0xFF;
-        header_size += 2;
+        header[1] = 0x80 | 126;  // Use 16-bit length field
+        header[2] = (length >> 8) & 0xFF;  // High byte of 16-bit length
+        header[3] = length & 0xFF;  // Low byte of 16-bit length
+        header_size += 2;  // Increase header size for 16-bit length field
     } else {
-        header[1] = 0x80 | 127;
+        header[1] = 0x80 | 127;  // Use 64-bit length field
         for (int i = 0; i < 8; i++) {
-            header[2 + i] = (length >> ((7 - i) * 8)) & 0xFF;
+            header[2 + i] = (length >> ((7 - i) * 8)) & 0xFF;  // 64-bit length, byte by byte
         }
-        header_size += 8;
+        header_size += 8;  // Increase header size for 64-bit length field
     }
 
-    // Add mask to header
+    // Add the mask to the header
     memcpy(header + header_size, &mask, 4);
-    header_size += 4;
+    header_size += 4;  // Increase header size for mask
 
-    // Allocate buffer for entire frame (header + masked payload)
+    // Allocate memory for the entire frame (header + masked payload)
     size_t frame_size = header_size + length;
     uint8_t* frame = (uint8_t*)malloc(frame_size);
-    if (!frame) return -1;
+    if (!frame) return -1;  // Return error if memory allocation fails
 
-    // Copy header to frame
+    // Copy the header to the frame
     memcpy(frame, header, header_size);
 
-    // Apply mask to data and copy to frame
+    // Apply the mask to the data and copy it to the frame
     for (size_t i = 0; i < length; i++) {
-        frame[header_size + i] = data[i] ^ ((uint8_t*)&mask)[i % 4];
+        frame[header_size + i] = data[i] ^ ((uint8_t*)&mask)[i % 4];  // XOR each byte with the corresponding mask byte
     }
 
     // Debug: Print frame details
@@ -263,15 +285,16 @@ int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
     printf("Payload length: %zu\n", length);
     printf("Frame size: %zu\n", frame_size);
     printf("Frame contents:\n");
-    print_hex2(frame, frame_size);
+    print_hex2(frame, frame_size);  // Assuming print_hex2 is a custom function to print hex data
 
-    // Send entire frame
+    // Send the entire frame
     int result = send(ctx->socket, (char*)frame, frame_size, 0);
-    free(frame);
+    free(frame);  // Free the allocated memory for the frame
 
+    // Check if the entire frame was sent successfully
     if (result != frame_size) {
         printf("Send failed. Sent %d bytes out of %zu\n", result, frame_size);
-        return -1;
+        return -1;  // Return error if not all bytes were sent
     }
 
     return 0;
