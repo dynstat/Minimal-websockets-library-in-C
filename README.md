@@ -15,15 +15,15 @@ A simple WebSocket client library implemented in C for Windows using Winsock2. T
 - [`ws_lib.c`](c:ws_lib.c): Implementation of the WebSocket library.
 - [`ws_lib.h`](ws_lib.h): Header file for the WebSocket library.
 - [`example_usage.c`](c:example_usage.c): Example program demonstrating how to use the WebSocket library.
-- [`build_inst_ws_lib.c`](c:build_inst_ws_lib.c): Build instructions for compiling the library and example.
+- [`build_inst_ws_lib.txt`](c:build_inst_ws_lib.txt): Build instructions for compiling the library and example.
 
 ## Build Instructions
 
 ### Prerequisites
 
-- **Visual Studio Code**: Ensure you have Visual Studio Code installed.
-- **Windows OS**: The library is designed for Windows platforms.
+- **Windows OS**: The library is designed for Windows platforms yet.
 - **C Compiler**: Microsoft Visual C++ (`cl.exe`) is required. Make sure it's available in your system's PATH.
+- **Developer command prompt for VS**: run the below commands in this command prompt. 
 
 ### Steps
 
