@@ -12,10 +12,10 @@ A simple WebSocket client library implemented in C for Windows using Winsock2. T
 
 ## Files
 
-- [`ws_lib.c`](c:ws_lib.c): Implementation of the WebSocket library.
-- [`ws_lib.h`](ws_lib.h): Header file for the WebSocket library.
-- [`example_usage.c`](c:example_usage.c): Example program demonstrating how to use the WebSocket library.
-- [`build_inst_ws_lib.txt`](c:build_inst_ws_lib.txt): Build instructions for compiling the library and example.
+- [`ws_lib.c`](https://gitlab01.dcservices.in/contribute/to-c/mws-c/-/blob/main/ws_lib.c): Implementation of the WebSocket library.
+- [`ws_lib.h`](https://gitlab01.dcservices.in/contribute/to-c/mws-c/-/blob/main/ws_lib.h): Header file for the WebSocket library.
+- [`example_usage.c`](https://gitlab01.dcservices.in/contribute/to-c/mws-c/-/blob/main/example_usage.c): Example program demonstrating how to use the WebSocket library.
+- [`build/build_inst_ws_lib.txt`](https://gitlab01.dcservices.in/contribute/to-c/mws-c/-/blob/main/build/build_inst_ws_lib.txt): Build instructions for compiling the library and example.
 
 ## Build Instructions
 
