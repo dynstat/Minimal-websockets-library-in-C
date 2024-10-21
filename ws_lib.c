@@ -1,19 +1,24 @@
+// Include necessary header files
 #include "ws_lib.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+// Windows-specific includes and definitions
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+// Link with Ws2_32.lib
 #pragma comment(lib, "Ws2_32.lib")
 
+// WebSocket-specific constants
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #define WS_HEADER_SIZE 14
 
+// WebSocket context structure
 struct ws_ctx {
     SOCKET socket;
     ws_state state;
@@ -22,8 +27,10 @@ struct ws_ctx {
     size_t recv_buffer_len;
 };
 
+// Base64 encoding table
 static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+// Function to encode data in base64
 static char* base64_encode(const unsigned char* input, int length) {
     int output_length = 4 * ((length + 2) / 3);
     char* encoded = (char*)malloc(output_length + 1);
@@ -43,6 +50,7 @@ static char* base64_encode(const unsigned char* input, int length) {
         encoded[j++] = base64_table[triple & 0x3F];
     }
 
+    // Add padding if necessary
     for (i = 0; i < (3 - length % 3) % 3; i++)
         encoded[output_length - 1 - i] = '=';
 
@@ -51,6 +59,7 @@ static char* base64_encode(const unsigned char* input, int length) {
     return encoded;
 }
 
+// Function to send WebSocket handshake
 static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
     char key[16];
     char encoded_key[25];
@@ -86,6 +95,7 @@ static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
     return 0;
 }
 
+// Function to parse WebSocket handshake response
 static int ws_parse_handshake_response(ws_ctx* ctx) {
     char buffer[1024];
     int bytes_received = recv(ctx->socket, buffer, sizeof(buffer) - 1, 0);
@@ -110,11 +120,13 @@ static int ws_parse_handshake_response(ws_ctx* ctx) {
     return 0;
 }
 
+// Initialize Winsock
 int ws_init(void) {
     WSADATA wsaData;
     return WSAStartup(MAKEWORD(2, 2), &wsaData);
 }
 
+// Create a new WebSocket context
 ws_ctx* ws_create_ctx(void) {
     ws_ctx* ctx = (ws_ctx*)malloc(sizeof(ws_ctx));
     if (ctx) {
@@ -127,6 +139,7 @@ ws_ctx* ws_create_ctx(void) {
     return ctx;
 }
 
+// Connect to a WebSocket server
 int ws_connect(ws_ctx* ctx, const char* uri) {
     // Parse URI
     char schema[10], host[256], path[256];
@@ -147,8 +160,14 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     
-    char port_str[6];
+    // Convert the integer port number to a string
+    char port_str[6];  // Buffer to hold the port number as a string
+    // Use snprintf to safely convert the port number to a string
+    // Example: If port is 8080, port_str will be "8080\0"
+    //          If port is 80, port_str will be "80\0"
     snprintf(port_str, sizeof(port_str), "%d", port);
+    // Note: sizeof(port_str) is 6, which allows for up to 5 digits plus null terminator
+    // This covers all valid port numbers (0-65535)
 
     if (getaddrinfo(host, port_str, &hints, &result) != 0) {
         return -1;
@@ -185,11 +204,12 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
     return 0;
 }
 
-// Add this function to generate a random 32-bit mask
+// Generate a random 32-bit mask for WebSocket frames
 static uint32_t generate_mask() {
     return ((uint32_t)rand() << 24) | ((uint32_t)rand() << 16) | ((uint32_t)rand() << 8) | (uint32_t)rand();
 }
 
+// Send data over WebSocket
 int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
     if (ctx->state != WS_STATE_OPEN) {
         return -1;
@@ -200,8 +220,10 @@ int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
     size_t header_size = 2;
     uint32_t mask = generate_mask();
 
+    // Set FIN bit and opcode
     header[0] = 0x80 | (opcode & 0x0F);
     
+    // Set payload length and masking bit
     if (length <= 125) {
         header[1] = 0x80 | length;
     } else if (length <= 65535) {
@@ -255,6 +277,7 @@ int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
     return 0;
 }
 
+// Receive data from WebSocket
 int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
     if (ctx->state != WS_STATE_OPEN) {
         printf("Error: WebSocket not in OPEN state\n");
@@ -265,6 +288,7 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
     bool final_fragment = false;
 
     while (!final_fragment && total_received < buffer_size) {
+        // Receive frame header
         uint8_t header[2];
         int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
         if (bytes_received != 2) {
@@ -272,6 +296,7 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
             return -1;
         }
 
+        // Parse frame header
         final_fragment = header[0] & 0x80;
         int opcode = header[0] & 0x0F;
         bool masked = header[1] & 0x80;
@@ -280,6 +305,7 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
         printf("Frame info: final=%d, opcode=%d, masked=%d, payload_length=%llu\n", 
                final_fragment, opcode, masked, payload_length);
 
+        // Handle extended payload length
         if (payload_length == 126) {
             uint16_t extended_length;
             bytes_received = recv(ctx->socket, (char*)&extended_length, 2, 0);
@@ -300,6 +326,7 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
 
         printf("Actual payload length: %llu\n", payload_length);
 
+        // Handle masking
         uint32_t mask = 0;
         if (masked) {
             bytes_received = recv(ctx->socket, (char*)&mask, 4, 0);
@@ -309,6 +336,7 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
             }
         }
 
+        // Receive payload data
         size_t remaining_buffer = buffer_size - total_received;
         size_t fragment_size = (payload_length < remaining_buffer) ? payload_length : remaining_buffer;
         size_t bytes_to_receive = fragment_size;
@@ -323,12 +351,14 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
             bytes_to_receive -= bytes_received;
         }
 
+        // Unmask data if necessary
         if (masked) {
             for (size_t i = total_received - fragment_size; i < total_received; i++) {
                 buffer[i] ^= ((uint8_t*)&mask)[i % 4];
             }
         }
 
+        // Discard excess data if buffer is full
         if (fragment_size < payload_length) {
             size_t remaining = payload_length - fragment_size;
             char discard_buffer[1024];
@@ -349,6 +379,7 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
     return total_received;
 }
 
+// Close WebSocket connection
 int ws_close(ws_ctx* ctx) {
     if (ctx->state == WS_STATE_OPEN) {
         // Send close frame
@@ -388,6 +419,7 @@ int ws_close(ws_ctx* ctx) {
     return 0;
 }
 
+// Destroy WebSocket context
 void ws_destroy_ctx(ws_ctx* ctx) {
     if (ctx) {
         if (ctx->recv_buffer) {
@@ -397,19 +429,23 @@ void ws_destroy_ctx(ws_ctx* ctx) {
     }
 }
 
+// Clean up Winsock
 void ws_cleanup(void) {
     WSACleanup();
 }
 
+// Get current WebSocket state
 ws_state ws_get_state(ws_ctx* ctx) {
     return ctx->state;
 }
 
+// Service WebSocket connection (placeholder for future implementation)
 int ws_service(ws_ctx* ctx) {
     // TODO: Implement ping/pong, handle incoming frames, etc.
     return 0;
 }
 
+// Utility function to print data in hexadecimal format
 void print_hex2(const uint8_t* data, size_t length) {
     for (size_t i = 0; i < length; i++) {
         printf("%02X ", data[i]);
