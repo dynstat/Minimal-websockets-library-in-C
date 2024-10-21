@@ -1,6 +1,6 @@
-cl /c ws_lib.c
+cl /c mws_lib.c
 
-lib ws_lib.obj
+lib mws_lib.obj
 
-cl example_usage.c ws_lib.lib
+cl example_usage.c mws_lib.lib
 example_usage.exe
