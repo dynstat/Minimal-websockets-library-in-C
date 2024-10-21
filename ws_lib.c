@@ -18,6 +18,10 @@
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #define WS_HEADER_SIZE 14
 
+// Near the top of the file, add these definitions:
+#define HEARTBEAT_INTERVAL 30 // 30 seconds, adjust as needed
+#define HEARTBEAT_TIMEOUT 10 // 10 seconds, adjust as needed
+
 // WebSocket context structure
 struct ws_ctx {
     SOCKET socket;        // Socket handle for the WebSocket connection
@@ -462,12 +466,6 @@ ws_state ws_get_state(ws_ctx* ctx) {
     return ctx->state;
 }
 
-// Service WebSocket connection (placeholder for future implementation)
-int ws_service(ws_ctx* ctx) {
-    // TODO: Implement ping/pong, handle incoming frames, etc.
-    return 0;
-}
-
 // Utility function to print data in hexadecimal format
 void print_hex2(const uint8_t* data, size_t length) {
     for (size_t i = 0; i < length; i++) {
@@ -475,4 +473,92 @@ void print_hex2(const uint8_t* data, size_t length) {
         if ((i + 1) % 16 == 0) printf("\n");
     }
     printf("\n");
+}
+
+// New function to handle ping
+static int ws_handle_ping(ws_ctx* ctx) {
+    uint8_t pong_frame[] = {0x8A, 0x00}; // Pong frame with no payload
+    int sent = send(ctx->socket, (char*)pong_frame, sizeof(pong_frame), 0);
+    if (sent != sizeof(pong_frame)) {
+        printf("Failed to send pong frame\n");
+        return -1;
+    }
+    return 0;
+}
+
+// Modified ws_service function
+int ws_service(ws_ctx* ctx) {
+    static time_t last_ping_time = 0;
+    time_t current_time = time(NULL);
+
+    // Check if it's time to send a ping
+    if (current_time - last_ping_time >= HEARTBEAT_INTERVAL) {
+        uint8_t ping_frame[] = {0x89, 0x00}; // Ping frame with no payload
+        int sent = send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0);
+        if (sent != sizeof(ping_frame)) {
+            printf("Failed to send ping frame\n");
+            return -1;
+        }
+        last_ping_time = current_time;
+
+        // Wait for pong response
+        fd_set read_fds;
+        struct timeval tv;
+        FD_ZERO(&read_fds);
+        FD_SET(ctx->socket, &read_fds);
+        tv.tv_sec = HEARTBEAT_TIMEOUT;
+        tv.tv_usec = 0;
+
+        int select_result = select(ctx->socket + 1, &read_fds, NULL, NULL, &tv);
+        if (select_result == -1) {
+            printf("Select error\n");
+            return -1;
+        } else if (select_result == 0) {
+            printf("Pong timeout\n");
+            return -1;
+        }
+
+        // Receive the pong frame
+        uint8_t header[2];
+        int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
+        if (bytes_received != 2) {
+            printf("Error receiving pong header\n");
+            return -1;
+        }
+
+        int opcode = header[0] & 0x0F;
+        if (opcode != 0xA) { // 0xA is the opcode for pong
+            printf("Unexpected frame received (opcode: 0x%02X)\n", opcode);
+            return -1;
+        }
+    }
+
+    // Check for incoming frames
+    fd_set read_fds;
+    struct timeval tv;
+    FD_ZERO(&read_fds);
+    FD_SET(ctx->socket, &read_fds);
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+
+    int select_result = select(ctx->socket + 1, &read_fds, NULL, NULL, &tv);
+    if (select_result == -1) {
+        printf("Select error\n");
+        return -1;
+    } else if (select_result > 0) {
+        uint8_t header[2];
+        int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
+        if (bytes_received != 2) {
+            printf("Error receiving frame header\n");
+            return -1;
+        }
+
+        int opcode = header[0] & 0x0F;
+        if (opcode == 0x9) { // 0x9 is the opcode for ping
+            return ws_handle_ping(ctx);
+        }
+        // Handle other frame types if needed
+    }
+
+    return 0;
 }
