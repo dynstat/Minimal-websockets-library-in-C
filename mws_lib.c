@@ -76,7 +76,7 @@ static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
         key[i] = rand() % 256;
     }
     char* base64_key = base64_encode(key, 16);
-    strncpy(encoded_key, base64_key, 24);
+    strncpy_s(encoded_key, sizeof(encoded_key), base64_key, 24);
     encoded_key[24] = '\0';
     free(base64_key);
 
@@ -148,14 +148,14 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
     // Parse URI
     char schema[10], host[256], path[256];
     int port;
-    if (sscanf(uri, "%[^:]://%[^:/]:%d%s", schema, host, &port, path) < 3) {
-        if (sscanf(uri, "%[^:]://%[^/]%s", schema, host, path) < 3) {
+    if (sscanf_s(uri, "%9[^:]://%255[^:/]:%d%255s", schema, (unsigned)sizeof(schema), host, (unsigned)sizeof(host), &port, path, (unsigned)sizeof(path)) < 3) {
+        if (sscanf_s(uri, "%9[^:]://%255[^/]%255s", schema, (unsigned)sizeof(schema), host, (unsigned)sizeof(host), path, (unsigned)sizeof(path)) < 3) {
             return -1;
         }
         port = strcmp(schema, "wss") == 0 ? 443 : 80;
     }
     if (path[0] == '\0') {
-        strcpy(path, "/");
+        strcpy_s(path, sizeof(path), "/");
     }
 
     // Resolve address
@@ -562,3 +562,4 @@ int ws_service(ws_ctx* ctx) {
 
     return 0;
 }
+
