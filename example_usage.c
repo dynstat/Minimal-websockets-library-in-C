@@ -87,7 +87,11 @@ int main() {
     recv_len = ws_recv(ctx, large_buffer, 1000000);
     if (recv_len > 0) {
         large_buffer[recv_len] = '\0'; // Null-terminate the string
-        printf("Received final response (length: %d): %.20s...\n", recv_len, large_buffer);
+        printf("Received final response (length: %d): %.2000s...\n", recv_len, large_buffer);
+        // This line prints the length of the received response and the first 20 characters of the content.
+        // recv_len: The total number of bytes received in the response.
+        // large_buffer: Contains the full response, but only the first 20 characters are displayed.
+        // The "..." at the end indicates that there's more content not shown.
     } else {
         printf("Error receiving final response. recv_len = %d\n", recv_len);
         int error = WSAGetLastError();
