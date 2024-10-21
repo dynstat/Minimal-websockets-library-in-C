@@ -155,11 +155,11 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
     }
 
     // Resolve address
-    struct addrinfo hints, *result;
+    struct addrinfo hints, * result;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-    
+
     // Convert the integer port number to a string
     char port_str[6];  // Buffer to hold the port number as a string
     // Use snprintf to safely convert the port number to a string
@@ -215,7 +215,7 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
 // Generate a random 32-bit mask for WebSocket frames
     // This function generates a random 32-bit mask for WebSocket frames
     // It combines four random numbers to create a single 32-bit value
-    
+
     // Example:
     // Let's say rand() returns these values in sequence: 
     // 0x3A (58), 0xF2 (242), 0x7B (123), 0xC4 (196)
@@ -226,7 +226,7 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
     // Combining these with bitwise OR:
     // 0x3A000000 | 0x00F20000 | 0x00007B00 | 0x000000C4 = 0x3AF27BC4
 static uint32_t generate_mask() {
-    
+
     return ((uint32_t)rand() << 24) | ((uint32_t)rand() << 16) | ((uint32_t)rand() << 8) | (uint32_t)rand();
 }
 
@@ -244,16 +244,18 @@ int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
 
     // Set FIN bit (1) and opcode in the first byte of the header
     header[0] = 0x80 | (opcode & 0x0F);
-    
+
     // Set the payload length and masking bit in the second byte (and potentially more)
     if (length <= 125) {
         header[1] = 0x80 | length;  // Use 7-bit length field
-    } else if (length <= 65535) {
+    }
+    else if (length <= 65535) {
         header[1] = 0x80 | 126;  // Use 16-bit length field
         header[2] = (length >> 8) & 0xFF;  // High byte of 16-bit length
         header[3] = length & 0xFF;  // Low byte of 16-bit length
         header_size += 2;  // Increase header size for 16-bit length field
-    } else {
+    }
+    else {
         header[1] = 0x80 | 127;  // Use 64-bit length field
         for (int i = 0; i < 8; i++) {
             header[2 + i] = (length >> ((7 - i) * 8)) & 0xFF;  // 64-bit length, byte by byte
@@ -325,8 +327,8 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
         bool masked = header[1] & 0x80;
         uint64_t payload_length = header[1] & 0x7F;
 
-        printf("Frame info: final=%d, opcode=%d, masked=%d, payload_length=%llu\n", 
-               final_fragment, opcode, masked, payload_length);
+        printf("Frame info: final=%d, opcode=%d, masked=%d, payload_length=%llu\n",
+            final_fragment, opcode, masked, payload_length);
 
         // Handle extended payload length
         if (payload_length == 126) {
@@ -337,7 +339,8 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
                 return -1;
             }
             payload_length = ntohs(extended_length);
-        } else if (payload_length == 127) {
+        }
+        else if (payload_length == 127) {
             uint64_t extended_length;
             bytes_received = recv(ctx->socket, (char*)&extended_length, 8, 0);
             if (bytes_received != 8) {
@@ -367,8 +370,13 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
         while (bytes_to_receive > 0) {
             bytes_received = recv(ctx->socket, buffer + total_received, bytes_to_receive, 0);
             if (bytes_received <= 0) {
-                printf("Error receiving payload: expected %zu, got %d\n", bytes_to_receive, bytes_received);
-                return -1;
+                if (bytes_received == 0) {
+                    printf("Connection closed by server\n");
+                }
+                else {
+                    printf("Error receiving payload: %d\n", WSAGetLastError());
+                }
+                return total_received > 0 ? total_received : -1;
             }
             total_received += bytes_received;
             bytes_to_receive -= bytes_received;
@@ -406,14 +414,14 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
 int ws_close(ws_ctx* ctx) {
     if (ctx->state == WS_STATE_OPEN) {
         // Send close frame
-        uint8_t close_frame[] = {0x88, 0x02, 0x03, 0xE8}; // Status code 1000 (normal closure)
+        uint8_t close_frame[] = { 0x88, 0x02, 0x03, 0xE8 }; // Status code 1000 (normal closure)
         int sent = send(ctx->socket, (char*)close_frame, sizeof(close_frame), 0);
         if (sent != sizeof(close_frame)) {
             printf("Failed to send close frame\n");
             return -1;
         }
         ctx->state = WS_STATE_CLOSING;
-        
+
         // Wait for the server's close frame (with a timeout)
         char buffer[1024];
         int recv_result;
@@ -421,7 +429,7 @@ int ws_close(ws_ctx* ctx) {
         tv.tv_sec = 5;  // 5 seconds timeout
         tv.tv_usec = 0;
         setsockopt(ctx->socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-        
+
         do {
             recv_result = recv(ctx->socket, buffer, sizeof(buffer), 0);
             if (recv_result > 0) {
@@ -436,7 +444,7 @@ int ws_close(ws_ctx* ctx) {
             printf("Timeout or error while waiting for server's close frame\n");
         }
     }
-    
+
     closesocket(ctx->socket);
     ctx->state = WS_STATE_CLOSED;
     return 0;
@@ -473,7 +481,7 @@ void print_hex2(const uint8_t* data, size_t length) {
 
 // New function to handle ping
 static int ws_handle_ping(ws_ctx* ctx) {
-    uint8_t pong_frame[] = {0x8A, 0x00}; // Pong frame with no payload
+    uint8_t pong_frame[] = { 0x8A, 0x00 }; // Pong frame with no payload
     int sent = send(ctx->socket, (char*)pong_frame, sizeof(pong_frame), 0);
     if (sent != sizeof(pong_frame)) {
         printf("Failed to send pong frame\n");
@@ -489,7 +497,7 @@ int ws_service(ws_ctx* ctx) {
 
     // Check if it's time to send a ping
     if (current_time - last_ping_time >= HEARTBEAT_INTERVAL) {
-        uint8_t ping_frame[] = {0x89, 0x00}; // Ping frame with no payload
+        uint8_t ping_frame[] = { 0x89, 0x00 }; // Ping frame with no payload
         int sent = send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0);
         if (sent != sizeof(ping_frame)) {
             printf("Failed to send ping frame\n");
@@ -509,7 +517,8 @@ int ws_service(ws_ctx* ctx) {
         if (select_result == -1) {
             printf("Select error\n");
             return -1;
-        } else if (select_result == 0) {
+        }
+        else if (select_result == 0) {
             printf("Pong timeout\n");
             return -1;
         }
@@ -541,7 +550,8 @@ int ws_service(ws_ctx* ctx) {
     if (select_result == -1) {
         printf("Select error\n");
         return -1;
-    } else if (select_result > 0) {
+    }
+    else if (select_result > 0) {
         uint8_t header[2];
         int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
         if (bytes_received != 2) {

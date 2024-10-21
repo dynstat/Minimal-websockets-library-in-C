@@ -3,10 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
+
 #ifdef _WIN32
 #include <winsock2.h>
 #endif

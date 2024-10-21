@@ -1,5 +1,6 @@
 #include "mws_lib.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 
@@ -50,7 +51,8 @@ int main() {
     if (recv_len > 0) {
         printf("Received echo: ");
         printf(ANSI_COLOR_GREEN "%.*s\n" ANSI_COLOR_RESET, recv_len, recv_buffer);
-    } else {
+    }
+    else {
         printf("Error receiving echo of message 1.\n");
         goto cleanup;
     }
@@ -61,7 +63,8 @@ int main() {
     if (recv_len > 0) {
         printf("Received additional message: ");
         printf(ANSI_COLOR_GREEN "%.*s\n" ANSI_COLOR_RESET, recv_len, recv_buffer);
-    } else {
+    }
+    else {
         printf("Error receiving additional message.\n");
         goto cleanup;
     }
@@ -92,14 +95,15 @@ int main() {
         // recv_len: The total number of bytes received in the response.
         // large_buffer: Contains the full response, but only the first 20 characters are displayed.
         // The "..." at the end indicates that there's more content not shown.
-    } else {
+    }
+    else {
         printf("Error receiving final response. recv_len = %d\n", recv_len);
         int error = WSAGetLastError();
         printf("WSA error code: %d\n", error);
         char error_msg[256];
         FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                      NULL, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                      error_msg, sizeof(error_msg), NULL);
+            NULL, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+            error_msg, sizeof(error_msg), NULL);
         printf("Error message: %s\n", error_msg);
     }
 
@@ -114,7 +118,8 @@ cleanup:
     int close_result = ws_close(ctx);
     if (close_result == 0) {
         printf("WebSocket connection closed successfully.\n");
-    } else {
+    }
+    else {
         printf("Error closing WebSocket connection.\n");
     }
 
