@@ -19,9 +19,11 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Logger2.h" />
     <ClInclude Include="mws_lib.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Logger2.c" />
     <ClCompile Include="mws_lib.c" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

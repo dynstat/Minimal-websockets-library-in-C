@@ -1,5 +1,6 @@
 // Include necessary header files
 #include "mws_lib.h"
+#include "Logger2.h"
 
 // Windows-specific includes and definitions
 #define WIN32_LEAN_AND_MEAN
@@ -14,9 +15,8 @@
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 #define WS_HEADER_SIZE 14
 
-// Near the top of the file, add these definitions:
-#define HEARTBEAT_INTERVAL 30 // 30 seconds, adjust as needed
-#define HEARTBEAT_TIMEOUT 10 // 10 seconds, adjust as needed
+#define HEARTBEAT_INTERVAL 30 // 30 seconds
+#define HEARTBEAT_TIMEOUT 10 // 10 seconds
 
 // WebSocket context structure
 struct ws_ctx {
@@ -128,19 +128,32 @@ int ws_init(void) {
 
 // Create a new WebSocket context
 ws_ctx* ws_create_ctx(void) {
+    logToFile2("Creating WebSocket context...\n");
     ws_ctx* ctx = (ws_ctx*)malloc(sizeof(ws_ctx));
     if (ctx) {
+        logToFile2("WebSocket context allocated successfully.\n");
         memset(ctx, 0, sizeof(ws_ctx));
         ctx->state = WS_STATE_CLOSED;
         ctx->recv_buffer_size = 1024;
         ctx->recv_buffer = (char*)malloc(ctx->recv_buffer_size);
-        ctx->recv_buffer_len = 0;
+        if (ctx->recv_buffer) {
+            logToFile2("Receive buffer allocated successfully.\n");
+            ctx->recv_buffer_len = 0;
+        } else {
+            logToFile2("Failed to allocate receive buffer.\n");
+            free(ctx);
+            return NULL;
+        }
+        logToFile2("WebSocket context initialized.\n");
+    } else {
+        logToFile2("Failed to allocate WebSocket context.\n");
     }
     return ctx;
 }
 
 // Connect to a WebSocket server
 int ws_connect(ws_ctx* ctx, const char* uri) {
+    logToFile2("Attempting to connect to WebSocket server\n");
     // Parse URI
     char schema[10], host[256], path[256];
     int port;
@@ -181,21 +194,23 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
         return -1;
     }
 
-    // Create socket and connect
+    logToFile2("Resolved address. Creating socket...\n");
     ctx->socket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
     if (ctx->socket == INVALID_SOCKET) {
+        logToFile2("Failed to create socket\n");
         freeaddrinfo(result);
         return -1;
     }
 
+    logToFile2("Socket created. Connecting...\n");
     if (connect(ctx->socket, result->ai_addr, (int)result->ai_addrlen) == SOCKET_ERROR) {
+        logToFile2("Failed to connect to server\n");
         closesocket(ctx->socket);
         freeaddrinfo(result);
         return -1;
     }
 
-    freeaddrinfo(result);
-
+    logToFile2("Connected to server. Sending WebSocket handshake...\n");
     // Send WebSocket handshake
     ctx->state = WS_STATE_CONNECTING;
     if (ws_send_handshake(ctx, host, path) != 0) {
@@ -232,6 +247,10 @@ static uint32_t generate_mask() {
 
 // Send data over WebSocket
 int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
+    char logBuffer[256];
+    snprintf(logBuffer, sizeof(logBuffer), "Sending WebSocket frame: opcode=0x%X, length=%zu\n", opcode, length);
+    logToFile2(logBuffer);
+
     // Check if the WebSocket connection is in the OPEN state
     if (ctx->state != WS_STATE_OPEN) {
         return -1;  // Return error if not in OPEN state
@@ -281,13 +300,13 @@ int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
     }
 
     // Debug: Print frame details
-    printf("Sending frame:\n");
-    printf("Opcode: 0x%02X\n", opcode);
-    printf("Mask: 0x%08X\n", mask);
-    printf("Payload length: %zu\n", length);
-    printf("Frame size: %zu\n", frame_size);
-    printf("Frame contents:\n");
-    print_hex2(frame, frame_size);  // Assuming print_hex2 is a custom function to print hex data
+    // printf("Sending frame:\n");
+    // printf("Opcode: 0x%02X\n", opcode);
+    // printf("Mask: 0x%08X\n", mask);
+    // printf("Payload length: %zu\n", length);
+    // printf("Frame size: %zu\n", frame_size);
+    // printf("Frame contents:\n");
+    // print_hex2(frame, frame_size);  // Assuming print_hex2 is a custom function to print hex data
 
     // Send the entire frame
     int result = send(ctx->socket, (char*)frame, frame_size, 0);
@@ -295,17 +314,20 @@ int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
 
     // Check if the entire frame was sent successfully
     if (result != frame_size) {
-        printf("Send failed. Sent %d bytes out of %zu\n", result, frame_size);
+        // printf("Send failed. Sent %d bytes out of %zu\n", result, frame_size);
         return -1;  // Return error if not all bytes were sent
     }
 
+    logToFile2("WebSocket frame sent successfully\n");
     return 0;
 }
 
 // Receive data from WebSocket
 int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
+    logToFile2("Receiving WebSocket frame...\n");
+
     if (ctx->state != WS_STATE_OPEN) {
-        printf("Error: WebSocket not in OPEN state\n");
+        // printf("Error: WebSocket not in OPEN state\n");
         return -1;
     }
 
@@ -317,7 +339,7 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
         uint8_t header[2];
         int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
         if (bytes_received != 2) {
-            printf("Error receiving header: %d\n", WSAGetLastError());
+            // printf("Error receiving header: %d\n", WSAGetLastError());
             return -1;
         }
 
@@ -327,15 +349,17 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
         bool masked = header[1] & 0x80;
         uint64_t payload_length = header[1] & 0x7F;
 
-        printf("Frame info: final=%d, opcode=%d, masked=%d, payload_length=%llu\n",
+        char logBuffer[256];
+        snprintf(logBuffer, sizeof(logBuffer), "Frame info: final=%d, opcode=%d, masked=%d, payload_length=%llu\n",
             final_fragment, opcode, masked, payload_length);
+        logToFile2(logBuffer);
 
         // Handle extended payload length
         if (payload_length == 126) {
             uint16_t extended_length;
             bytes_received = recv(ctx->socket, (char*)&extended_length, 2, 0);
             if (bytes_received != 2) {
-                printf("Error receiving extended length (16-bit): %d\n", WSAGetLastError());
+                // printf("Error receiving extended length (16-bit): %d\n", WSAGetLastError());
                 return -1;
             }
             payload_length = ntohs(extended_length);
@@ -344,20 +368,20 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
             uint64_t extended_length;
             bytes_received = recv(ctx->socket, (char*)&extended_length, 8, 0);
             if (bytes_received != 8) {
-                printf("Error receiving extended length (64-bit): %d\n", WSAGetLastError());
+                // printf("Error receiving extended length (64-bit): %d\n", WSAGetLastError());
                 return -1;
             }
             payload_length = ntohll(extended_length);
         }
 
-        printf("Actual payload length: %llu\n", payload_length);
+        // printf("Actual payload length: %llu\n", payload_length);
 
         // Handle masking
         uint32_t mask = 0;
         if (masked) {
             bytes_received = recv(ctx->socket, (char*)&mask, 4, 0);
             if (bytes_received != 4) {
-                printf("Error receiving mask: %d\n", WSAGetLastError());
+                // printf("Error receiving mask: %d\n", WSAGetLastError());
                 return -1;
             }
         }
@@ -371,10 +395,10 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
             bytes_received = recv(ctx->socket, buffer + total_received, bytes_to_receive, 0);
             if (bytes_received <= 0) {
                 if (bytes_received == 0) {
-                    printf("Connection closed by server\n");
+                    // printf("Connection closed by server\n");
                 }
                 else {
-                    printf("Error receiving payload: %d\n", WSAGetLastError());
+                    // printf("Error receiving payload: %d\n", WSAGetLastError());
                 }
                 return total_received > 0 ? total_received : -1;
             }
@@ -397,27 +421,31 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
                 size_t to_discard = (remaining < sizeof(discard_buffer)) ? remaining : sizeof(discard_buffer);
                 bytes_received = recv(ctx->socket, discard_buffer, to_discard, 0);
                 if (bytes_received <= 0) {
-                    printf("Error discarding excess data: %d\n", WSAGetLastError());
+                    // printf("Error discarding excess data: %d\n", WSAGetLastError());
                     break;
                 }
                 remaining -= bytes_received;
             }
-            printf("Discarded %llu bytes\n", payload_length - fragment_size);
+            // printf("Discarded %llu bytes\n", payload_length - fragment_size);
         }
     }
 
-    printf("Total received: %zu bytes\n", total_received);
+    char logBuffer[256];
+    snprintf(logBuffer, sizeof(logBuffer), "Received %zu bytes in total\n", total_received);
+    logToFile2(logBuffer);
     return total_received;
 }
 
 // Close WebSocket connection
 int ws_close(ws_ctx* ctx) {
+    logToFile2("Closing WebSocket connection...\n");
+
     if (ctx->state == WS_STATE_OPEN) {
         // Send close frame
         uint8_t close_frame[] = { 0x88, 0x02, 0x03, 0xE8 }; // Status code 1000 (normal closure)
         int sent = send(ctx->socket, (char*)close_frame, sizeof(close_frame), 0);
         if (sent != sizeof(close_frame)) {
-            printf("Failed to send close frame\n");
+            // printf("Failed to send close frame\n");
             return -1;
         }
         ctx->state = WS_STATE_CLOSING;
@@ -434,19 +462,20 @@ int ws_close(ws_ctx* ctx) {
             recv_result = recv(ctx->socket, buffer, sizeof(buffer), 0);
             if (recv_result > 0) {
                 if ((buffer[0] & 0x0F) == 0x8) {
-                    printf("Received close frame from server\n");
+                    // printf("Received close frame from server\n");
                     break;
                 }
             }
         } while (recv_result > 0);
 
         if (recv_result <= 0) {
-            printf("Timeout or error while waiting for server's close frame\n");
+            // printf("Timeout or error while waiting for server's close frame\n");
         }
     }
 
     closesocket(ctx->socket);
     ctx->state = WS_STATE_CLOSED;
+    logToFile2("WebSocket connection closed\n");
     return 0;
 }
 
@@ -473,34 +502,38 @@ ws_state ws_get_state(ws_ctx* ctx) {
 // Utility function to print data in hexadecimal format
 void print_hex2(const uint8_t* data, size_t length) {
     for (size_t i = 0; i < length; i++) {
-        printf("%02X ", data[i]);
-        if ((i + 1) % 16 == 0) printf("\n");
+        // printf("%02X ", data[i]);
+        if ((i + 1) % 16 == 0) {} // printf("\n");
     }
-    printf("\n");
+    // printf("\n");
 }
 
 // New function to handle ping
 static int ws_handle_ping(ws_ctx* ctx) {
+    logToFile2("Handling ping frame...\n");
     uint8_t pong_frame[] = { 0x8A, 0x00 }; // Pong frame with no payload
     int sent = send(ctx->socket, (char*)pong_frame, sizeof(pong_frame), 0);
     if (sent != sizeof(pong_frame)) {
-        printf("Failed to send pong frame\n");
+        // printf("Failed to send pong frame\n");
         return -1;
     }
+    logToFile2("Pong frame sent\n");
     return 0;
 }
 
 // Modified ws_service function
 int ws_service(ws_ctx* ctx) {
+    logToFile2("Servicing WebSocket connection...\n");
     static time_t last_ping_time = 0;
     time_t current_time = time(NULL);
 
     // Check if it's time to send a ping
     if (current_time - last_ping_time >= HEARTBEAT_INTERVAL) {
+        logToFile2("Sending ping frame...\n");
         uint8_t ping_frame[] = { 0x89, 0x00 }; // Ping frame with no payload
         int sent = send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0);
         if (sent != sizeof(ping_frame)) {
-            printf("Failed to send ping frame\n");
+            // printf("Failed to send ping frame\n");
             return -1;
         }
         last_ping_time = current_time;
@@ -515,11 +548,11 @@ int ws_service(ws_ctx* ctx) {
 
         int select_result = select(ctx->socket + 1, &read_fds, NULL, NULL, &tv);
         if (select_result == -1) {
-            printf("Select error\n");
+            // printf("Select error\n");
             return -1;
         }
         else if (select_result == 0) {
-            printf("Pong timeout\n");
+            logToFile2("Pong timeout\n");
             return -1;
         }
 
@@ -527,15 +560,18 @@ int ws_service(ws_ctx* ctx) {
         uint8_t header[2];
         int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
         if (bytes_received != 2) {
-            printf("Error receiving pong header\n");
+            // printf("Error receiving pong header\n");
             return -1;
         }
 
         int opcode = header[0] & 0x0F;
         if (opcode != 0xA) { // 0xA is the opcode for pong
-            printf("Unexpected frame received (opcode: 0x%02X)\n", opcode);
+            char logBuffer[256];
+            snprintf(logBuffer, sizeof(logBuffer), "Unexpected frame received (opcode: 0x%02X)\n", opcode);
+            logToFile2(logBuffer);
             return -1;
         }
+        logToFile2("Pong received successfully\n");
     }
 
     // Check for incoming frames
@@ -548,14 +584,14 @@ int ws_service(ws_ctx* ctx) {
 
     int select_result = select(ctx->socket + 1, &read_fds, NULL, NULL, &tv);
     if (select_result == -1) {
-        printf("Select error\n");
+        // printf("Select error\n");
         return -1;
     }
     else if (select_result > 0) {
         uint8_t header[2];
         int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
         if (bytes_received != 2) {
-            printf("Error receiving frame header\n");
+            // printf("Error receiving frame header\n");
             return -1;
         }
 
@@ -568,4 +604,3 @@ int ws_service(ws_ctx* ctx) {
 
     return 0;
 }
-

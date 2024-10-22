@@ -18,9 +18,15 @@
     <ClInclude Include="mws_lib.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Logger2.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="mws_lib.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Logger2.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
