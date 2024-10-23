@@ -1,0 +1,6 @@
+cl /c mws_lib.c
+
+lib mws_lib.obj
+
+cl example_usage.c mws_lib.lib
+example_usage.exe

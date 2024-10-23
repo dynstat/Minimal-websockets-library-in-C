@@ -1,0 +1,2 @@
+cl test-nb.c mws_lib.lib
+// assuming latest build of mws_lib.lib is in the same directory as test-nb.c
