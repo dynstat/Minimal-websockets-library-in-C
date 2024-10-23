@@ -689,3 +689,66 @@ int ws_service(ws_ctx* ctx) {
     return 0;
 }
 
+// Function to check if server is available at TCP level
+int ws_check_server_available(const char* host, int port) {
+    logToFile2("Checking server availability...\n");
+    
+    struct addrinfo hints, *result;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;     // Allow IPv4 or IPv6
+    hints.ai_socktype = SOCK_STREAM; // TCP stream sockets
+    
+    char port_str[6];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    if (getaddrinfo(host, port_str, &hints, &result) != 0) {
+        logToFile2("Failed to get address info\n");
+        return 0;
+    }
+
+    SOCKET sock = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    if (sock == INVALID_SOCKET) {
+        logToFile2("Failed to create socket\n");
+        freeaddrinfo(result);
+        return 0;
+    }
+
+    // Set socket to non-blocking mode
+    unsigned long mode = 1;
+    if (ioctlsocket(sock, FIONBIO, &mode) != 0) {
+        logToFile2("Failed to set non-blocking mode\n");
+        closesocket(sock);
+        freeaddrinfo(result);
+        return 0;
+    }
+
+    // Attempt to connect
+    connect(sock, result->ai_addr, (int)result->ai_addrlen);
+    
+    fd_set write_fds;
+    struct timeval timeout;
+    FD_ZERO(&write_fds);
+    FD_SET(sock, &write_fds);
+    timeout.tv_sec = 1;  // 1 second timeout
+    timeout.tv_usec = 0;
+
+    int available = 0;
+    if (select(sock + 1, NULL, &write_fds, NULL, &timeout) == 1) {
+        int error = 0;
+        int len = sizeof(error);
+        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&error, &len) == 0 && error == 0) {
+            logToFile2("Server is available\n");
+            available = 1;
+        } else {
+            char errMsg[256];
+            snprintf(errMsg, sizeof(errMsg), "Connection failed with error: %d\n", error);
+            logToFile2(errMsg);
+        }
+    } else {
+        logToFile2("Connection attempt timed out\n");
+    }
+
+    closesocket(sock);
+    freeaddrinfo(result);
+    return available;
+}
