@@ -170,76 +170,80 @@ ws_ctx* ws_create_ctx(void) {
 // Connect to a WebSocket server
 int ws_connect(ws_ctx* ctx, const char* uri) {
     logToFile2("Attempting to connect to WebSocket server\n");
+    
     // Parse URI
     char schema[10], host[256], path[256];
     int port;
-    if (sscanf_s(uri, "%9[^:]://%255[^:/]:%d%255s", schema, (unsigned)sizeof(schema), host, (unsigned)sizeof(host), &port, path, (unsigned)sizeof(path)) < 3) {
-        if (sscanf_s(uri, "%9[^:]://%255[^/]%255s", schema, (unsigned)sizeof(schema), host, (unsigned)sizeof(host), path, (unsigned)sizeof(path)) < 3) {
+    if (sscanf_s(uri, "%9[^:]://%255[^:/]:%d%255s", schema, (unsigned)sizeof(schema), 
+                 host, (unsigned)sizeof(host), &port, path, (unsigned)sizeof(path)) < 3) {
+        if (sscanf_s(uri, "%9[^:]://%255[^/]%255s", schema, (unsigned)sizeof(schema), 
+                     host, (unsigned)sizeof(host), path, (unsigned)sizeof(path)) < 3) {
+            logToFile2("Failed to parse URI\n");
             return -1;
         }
         port = strcmp(schema, "wss") == 0 ? 443 : 80;
     }
-    if (path[0] == '\0') {
-        strcpy_s(path, sizeof(path), "/");
-    }
+    
+    // Create log message with parsed details
+    char logMsg[512];
+    snprintf(logMsg, sizeof(logMsg), "Parsed URI - Schema: %s, Host: %s, Port: %d, Path: %s\n", 
+             schema, host, port, path);
+    logToFile2(logMsg);
 
     // Resolve address
-    struct addrinfo hints, * result;
+    struct addrinfo hints, *addr_info;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    // Convert the integer port number to a string
-    char port_str[6];  // Buffer to hold the port number as a string
-    // Use snprintf to safely convert the port number to a string
-    // Example: If port is 8080, port_str will be "8080\0"
-    //          If port is 80, port_str will be "80\0"
+    char port_str[6];
     snprintf(port_str, sizeof(port_str), "%d", port);
-    // Note: sizeof(port_str) is 6, which allows for up to 5 digits plus null terminator
-    // This covers all valid port numbers (0-65535)
 
-    // Resolve the host name to an IP address and get address information
-    // host: the hostname to resolve
-    // port_str: the port number as a string
-    // hints: specifies the type of socket and other options
-    // result: will contain the resulting address information
-    // Returns 0 on success, non-zero on failure
-    if (getaddrinfo(host, port_str, &hints, &result) != 0) {
-        // If getaddrinfo fails, it means we couldn't resolve the hostname
-        // or there was an error getting the address information
+    int gai_result = getaddrinfo(host, port_str, &hints, &addr_info);
+    if (gai_result != 0) {
+        char errMsg[256];
+        snprintf(errMsg, sizeof(errMsg), "getaddrinfo failed with error: %d\n", gai_result);
+        logToFile2(errMsg);
         return -1;
     }
 
-    logToFile2("Resolved address. Creating socket...\n");
-    ctx->socket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    ctx->socket = socket(addr_info->ai_family, addr_info->ai_socktype, addr_info->ai_protocol);
     if (ctx->socket == INVALID_SOCKET) {
-        logToFile2("Failed to create socket\n");
-        freeaddrinfo(result);
+        char errMsg[256];
+        snprintf(errMsg, sizeof(errMsg), "Failed to create socket. Error: %d\n", WSAGetLastError());
+        logToFile2(errMsg);
+        freeaddrinfo(addr_info);
         return -1;
     }
 
-    logToFile2("Socket created. Connecting...\n");
-    if (connect(ctx->socket, result->ai_addr, (int)result->ai_addrlen) == SOCKET_ERROR) {
-        logToFile2("Failed to connect to server\n");
+    int connect_result = connect(ctx->socket, addr_info->ai_addr, (int)addr_info->ai_addrlen);
+    if (connect_result == SOCKET_ERROR) {
+        char errMsg[256];
+        snprintf(errMsg, sizeof(errMsg), "Connect failed with error: %d\n", WSAGetLastError());
+        logToFile2(errMsg);
         closesocket(ctx->socket);
-        freeaddrinfo(result);
+        freeaddrinfo(addr_info);
         return -1;
     }
+
+    freeaddrinfo(addr_info);
 
     logToFile2("Connected to server. Sending WebSocket handshake...\n");
-    // Send WebSocket handshake
+    
     ctx->state = WS_STATE_CONNECTING;
     if (ws_send_handshake(ctx, host, path) != 0) {
+        logToFile2("Failed to send WebSocket handshake\n");
         closesocket(ctx->socket);
         return -1;
     }
 
-    // Parse handshake response
     if (ws_parse_handshake_response(ctx) != 0) {
+        logToFile2("Failed to parse WebSocket handshake response\n");
         closesocket(ctx->socket);
         return -1;
     }
 
+    logToFile2("WebSocket connection established successfully\n");
     return 0;
 }
 
@@ -620,3 +624,4 @@ int ws_service(ws_ctx* ctx) {
 
     return 0;
 }
+
