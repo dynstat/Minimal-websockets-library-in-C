@@ -31,6 +31,14 @@ extern "C" {
         WS_STATE_CLOSED
     } ws_state;
 
+    // WebSocket context structure
+    struct ws_ctx {
+        SOCKET socket;        // Socket handle for the WebSocket connection
+        ws_state state;       // Current state of the WebSocket connection
+        char* recv_buffer;    // Buffer to store received data
+        size_t recv_buffer_size;  // Total size of the receive buffer
+        size_t recv_buffer_len;   // Current length of data in the receive buffer
+    };
     // WebSocket context
     typedef struct ws_ctx ws_ctx;
 

@@ -18,14 +18,14 @@
 #define HEARTBEAT_INTERVAL 30 // 30 seconds
 #define HEARTBEAT_TIMEOUT 10 // 10 seconds
 
-// WebSocket context structure
-struct ws_ctx {
-    SOCKET socket;        // Socket handle for the WebSocket connection
-    ws_state state;       // Current state of the WebSocket connection
-    char* recv_buffer;    // Buffer to store received data
-    size_t recv_buffer_size;  // Total size of the receive buffer
-    size_t recv_buffer_len;   // Current length of data in the receive buffer
-};
+// // WebSocket context structure
+// struct ws_ctx {
+//     SOCKET socket;        // Socket handle for the WebSocket connection
+//     ws_state state;       // Current state of the WebSocket connection
+//     char* recv_buffer;    // Buffer to store received data
+//     size_t recv_buffer_size;  // Total size of the receive buffer
+//     size_t recv_buffer_len;   // Current length of data in the receive buffer
+// };
 
 // Base64 encoding table
 static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -61,12 +61,14 @@ static char* base64_encode(const unsigned char* input, int length) {
 
 // Function to send WebSocket handshake
 static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
+    logToFile2("Sending WebSocket handshake...\n");
     char key[16];
     char encoded_key[25];
     char request[1024];
     int request_len;
 
     // Generate random key
+    logToFile2("Generating random key...\n");
     srand((unsigned int)time(NULL));
     for (int i = 0; i < 16; i++) {
         key[i] = rand() % 256;
@@ -75,8 +77,10 @@ static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
     strncpy_s(encoded_key, sizeof(encoded_key), base64_key, 24);
     encoded_key[24] = '\0';
     free(base64_key);
+    logToFile2("Random key generated and encoded.\n");
 
     // Construct handshake request
+    logToFile2("Constructing handshake request...\n");
     request_len = snprintf(request, sizeof(request),
         "GET %s HTTP/1.1\r\n"
         "Host: %s\r\n"
@@ -86,37 +90,49 @@ static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
         "Sec-WebSocket-Version: 13\r\n"
         "\r\n",
         path, host, encoded_key);
+    logToFile2("Handshake request constructed.\n");
 
     // Send handshake request
+    logToFile2("Sending handshake request...\n");
     if (send(ctx->socket, request, request_len, 0) != request_len) {
+        logToFile2("Failed to send handshake request.\n");
         return -1;
     }
+    logToFile2("Handshake request sent successfully.\n");
 
     return 0;
 }
 
 // Function to parse WebSocket handshake response
 static int ws_parse_handshake_response(ws_ctx* ctx) {
+    logToFile2("Parsing WebSocket handshake response...\n");
     char buffer[1024];
     int bytes_received = recv(ctx->socket, buffer, sizeof(buffer) - 1, 0);
     if (bytes_received <= 0) {
+        logToFile2("Failed to receive handshake response.\n");
         return -1;
     }
     buffer[bytes_received] = '\0';
+    logToFile2("Received handshake response.\n");
 
     // Check for "HTTP/1.1 101" status
     if (strstr(buffer, "HTTP/1.1 101") == NULL) {
+        logToFile2("Invalid handshake response: HTTP/1.1 101 not found.\n");
         return -1;
     }
+    logToFile2("HTTP/1.1 101 status found in response.\n");
 
     // Check for "Upgrade: websocket"
     if (strstr(buffer, "Upgrade: websocket") == NULL) {
+        logToFile2("Invalid handshake response: Upgrade: websocket not found.\n");
         return -1;
     }
+    logToFile2("Upgrade: websocket found in response.\n");
 
     // TODO: Verify Sec-WebSocket-Accept if needed
 
     ctx->state = WS_STATE_OPEN;
+    logToFile2("WebSocket connection established successfully.\n");
     return 0;
 }
 

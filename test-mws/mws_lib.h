@@ -28,8 +28,28 @@ extern "C" {
         WS_STATE_CLOSED
     } ws_state;
 
+
+// WebSocket context structure
+struct ws_ctx {
+    SOCKET socket;        // Socket handle for the WebSocket connection
+    ws_state state;       // Current state of the WebSocket connection
+    char* recv_buffer;    // Buffer to store received data
+    size_t recv_buffer_size;  // Total size of the receive buffer
+    size_t recv_buffer_len;   // Current length of data in the receive buffer
+};
+
     // WebSocket context
+    // Forward declaration of the WebSocket context structure
+    // This allows other parts of the code to use pointers to ws_ctx
+    // without knowing its full definition
     typedef struct ws_ctx ws_ctx;
+    
+    // Syntax explanation:
+    // 'typedef': Creates an alias for a type
+    // 'struct ws_ctx': Declares a structure type named 'ws_ctx'
+    // 'ws_ctx': The alias name, which is the same as the struct name
+    // This creates an opaque type, hiding implementation details
+
 
     // Initialize the WebSocket library
     int ws_init(void);
