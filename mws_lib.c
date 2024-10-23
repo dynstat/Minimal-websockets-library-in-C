@@ -167,7 +167,75 @@ ws_ctx* ws_create_ctx(void) {
     return ctx;
 }
 
-// Connect to a WebSocket server
+// Add this helper function at the top of the file
+static int try_connect_nonblocking(SOCKET sock, const struct addrinfo* addr, int timeout_sec) {
+    // Set socket to non-blocking mode
+    unsigned long mode = 1;
+    if (ioctlsocket(sock, FIONBIO, &mode) != 0) {
+        logToFile2("Failed to set non-blocking mode\n");
+        return -1;
+    }
+
+    // Attempt connection
+    int result = connect(sock, addr->ai_addr, (int)addr->ai_addrlen);
+    if (result == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        if (error != WSAEWOULDBLOCK) {
+            char errMsg[256];
+            snprintf(errMsg, sizeof(errMsg), "Connect failed immediately with error: %d\n", error);
+            logToFile2(errMsg);
+            return -1;
+        }
+
+        // Connection is in progress, wait for completion
+        fd_set write_fds, except_fds;
+        struct timeval tv;
+        FD_ZERO(&write_fds);
+        FD_ZERO(&except_fds);
+        FD_SET(sock, &write_fds);
+        FD_SET(sock, &except_fds);
+        tv.tv_sec = timeout_sec;
+        tv.tv_usec = 0;
+
+        result = select(sock + 1, NULL, &write_fds, &except_fds, &tv);
+        if (result == 0) {
+            logToFile2("Connection attempt timed out\n");
+            return -2;  // Special code for timeout
+        }
+        if (result == SOCKET_ERROR) {
+            logToFile2("Select failed\n");
+            return -1;
+        }
+
+        if (FD_ISSET(sock, &except_fds)) {
+            logToFile2("Connection failed (exception)\n");
+            return -1;
+        }
+
+        // Check if actually connected
+        int so_error;
+        int optlen = sizeof(so_error);
+        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&so_error, &optlen) == 0) {
+            if (so_error != 0) {
+                char errMsg[256];
+                snprintf(errMsg, sizeof(errMsg), "Connection failed with error: %d\n", so_error);
+                logToFile2(errMsg);
+                return -1;
+            }
+        }
+    }
+
+    // Set socket back to blocking mode
+    mode = 0;
+    if (ioctlsocket(sock, FIONBIO, &mode) != 0) {
+        logToFile2("Failed to set blocking mode\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+// Modified ws_connect function
 int ws_connect(ws_ctx* ctx, const char* uri) {
     logToFile2("Attempting to connect to WebSocket server\n");
     
@@ -183,12 +251,6 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
         }
         port = strcmp(schema, "wss") == 0 ? 443 : 80;
     }
-    
-    // Create log message with parsed details
-    char logMsg[512];
-    snprintf(logMsg, sizeof(logMsg), "Parsed URI - Schema: %s, Host: %s, Port: %d, Path: %s\n", 
-             schema, host, port, path);
-    logToFile2(logMsg);
 
     // Resolve address
     struct addrinfo hints, *addr_info;
@@ -202,34 +264,36 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
     int gai_result = getaddrinfo(host, port_str, &hints, &addr_info);
     if (gai_result != 0) {
         char errMsg[256];
-        snprintf(errMsg, sizeof(errMsg), "getaddrinfo failed with error: %d\n", gai_result);
+        snprintf(errMsg, sizeof(errMsg), "getaddrinfo failed: %s\n", gai_strerror(gai_result));
         logToFile2(errMsg);
         return -1;
     }
 
-    ctx->socket = socket(addr_info->ai_family, addr_info->ai_socktype, addr_info->ai_protocol);
-    if (ctx->socket == INVALID_SOCKET) {
-        char errMsg[256];
-        snprintf(errMsg, sizeof(errMsg), "Failed to create socket. Error: %d\n", WSAGetLastError());
-        logToFile2(errMsg);
-        freeaddrinfo(addr_info);
-        return -1;
-    }
+    // Try each address until we successfully connect
+    struct addrinfo *ptr;
+    int connect_result = -1;
+    for(ptr = addr_info; ptr != NULL; ptr = ptr->ai_next) {
+        ctx->socket = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
+        if (ctx->socket == INVALID_SOCKET) {
+            continue;
+        }
 
-    int connect_result = connect(ctx->socket, addr_info->ai_addr, (int)addr_info->ai_addrlen);
-    if (connect_result == SOCKET_ERROR) {
-        char errMsg[256];
-        snprintf(errMsg, sizeof(errMsg), "Connect failed with error: %d\n", WSAGetLastError());
-        logToFile2(errMsg);
+        connect_result = try_connect_nonblocking(ctx->socket, ptr, 2); // 2 second timeout
+        if (connect_result == 0) {
+            break;  // Successfully connected
+        }
+
         closesocket(ctx->socket);
-        freeaddrinfo(addr_info);
-        return -1;
+        ctx->socket = INVALID_SOCKET;
     }
 
     freeaddrinfo(addr_info);
 
-    logToFile2("Connected to server. Sending WebSocket handshake...\n");
-    
+    if (connect_result != 0) {
+        return -1;  // Failed to connect to any address
+    }
+
+    // Proceed with WebSocket handshake
     ctx->state = WS_STATE_CONNECTING;
     if (ws_send_handshake(ctx, host, path) != 0) {
         logToFile2("Failed to send WebSocket handshake\n");
