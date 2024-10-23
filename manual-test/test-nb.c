@@ -27,51 +27,57 @@
 #define RECONNECT_INTERVAL 2000  // 2 seconds
 #define MAX_BUFFER_SIZE 1024000  // 1MB
 
-// Function to check if server is available at TCP level
+// Function to check if a server is available at the TCP level
 static int check_server_available(const char* host, int port) {
     struct addrinfo hints, *result;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_UNSPEC;     // Allow IPv4 or IPv6
+    hints.ai_socktype = SOCK_STREAM; // TCP stream sockets
     
+    // Convert port number to string
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%d", port);
 
+    // Get address information
     if (getaddrinfo(host, port_str, &hints, &result) != 0) {
-        return 0;
+        return 0; // Failed to get address info
     }
 
+    // Create a socket
     SOCKET sock = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
     if (sock == INVALID_SOCKET) {
         freeaddrinfo(result);
-        return 0;
+        return 0; // Failed to create socket
     }
 
-    // Set non-blocking mode
+    // Set socket to non-blocking mode
     unsigned long mode = 1;
     ioctlsocket(sock, FIONBIO, &mode);
 
-    // Try to connect
+    // Attempt to connect
     connect(sock, result->ai_addr, (int)result->ai_addrlen);
     
-    // Check connection status
+    // Set up for select() to check connection status
     fd_set write_fds;
     struct timeval timeout;
     FD_ZERO(&write_fds);
     FD_SET(sock, &write_fds);
-    timeout.tv_sec = 1;
+    timeout.tv_sec = 1;  // 1 second timeout
     timeout.tv_usec = 0;
 
     int available = 0;
+    // Check if the socket is ready for writing (connected) within the timeout period
     if (select(sock + 1, NULL, &write_fds, NULL, &timeout) == 1) {
         int error = 0;
         int len = sizeof(error);
+        // Check if there's any error on the socket
         getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&error, &len);
         if (error == 0) {
-            available = 1;
+            available = 1; // Connection successful
         }
     }
 
+    // Clean up
     closesocket(sock);
     freeaddrinfo(result);
     return available;
