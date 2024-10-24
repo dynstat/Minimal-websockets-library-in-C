@@ -5,8 +5,9 @@
 // Windows-specific includes and definitions
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <winsock2.h>
+#include <winsock2.h>                                               
 #include <ws2tcpip.h>
+
 
 // Link with Ws2_32.lib
 #pragma comment(lib, "Ws2_32.lib")
@@ -17,6 +18,10 @@
 
 #define HEARTBEAT_INTERVAL 30 // 30 seconds
 #define HEARTBEAT_TIMEOUT 10 // 10 seconds
+
+// Add these constants at the top if not already present
+#define PING_TIMEOUT_MS 30000  // 30 seconds
+#define PONG_TIMEOUT_MS 10000  // 10 seconds
 
 // // WebSocket context structure
 // struct ws_ctx {
@@ -61,14 +66,14 @@ static char* base64_encode(const unsigned char* input, int length) {
 
 // Function to send WebSocket handshake
 static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
-    logToFile2("Sending WebSocket handshake...\n");
+    logToFile2("MWS: Sending WebSocket handshake...\n");
     char key[16];
     char encoded_key[25];
     char request[1024];
     int request_len;
 
     // Generate random key
-    logToFile2("Generating random key...\n");
+    logToFile2("MWS: Generating random key...\n");
     srand((unsigned int)time(NULL));
     for (int i = 0; i < 16; i++) {
         key[i] = rand() % 256;
@@ -77,10 +82,10 @@ static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
     strncpy_s(encoded_key, sizeof(encoded_key), base64_key, 24);
     encoded_key[24] = '\0';
     free(base64_key);
-    logToFile2("Random key generated and encoded.\n");
+    logToFile2("MWS: Random key generated and encoded.\n");
 
     // Construct handshake request
-    logToFile2("Constructing handshake request...\n");
+    logToFile2("MWS: Constructing handshake request...\n");
     request_len = snprintf(request, sizeof(request),
         "GET %s HTTP/1.1\r\n"
         "Host: %s\r\n"
@@ -90,49 +95,49 @@ static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
         "Sec-WebSocket-Version: 13\r\n"
         "\r\n",
         path, host, encoded_key);
-    logToFile2("Handshake request constructed.\n");
+    logToFile2("MWS: Handshake request constructed.\n");
 
     // Send handshake request
-    logToFile2("Sending handshake request...\n");
+    logToFile2("MWS: Sending handshake request...\n");
     if (send(ctx->socket, request, request_len, 0) != request_len) {
-        logToFile2("Failed to send handshake request.\n");
+        logToFile2("MWS: Failed to send handshake request.\n");
         return -1;
     }
-    logToFile2("Handshake request sent successfully.\n");
+    logToFile2("MWS: Handshake request sent successfully.\n");
 
     return 0;
 }
 
 // Function to parse WebSocket handshake response
 static int ws_parse_handshake_response(ws_ctx* ctx) {
-    logToFile2("Parsing WebSocket handshake response...\n");
+    logToFile2("MWS: Parsing WebSocket handshake response...\n");
     char buffer[1024];
     int bytes_received = recv(ctx->socket, buffer, sizeof(buffer) - 1, 0);
     if (bytes_received <= 0) {
-        logToFile2("Failed to receive handshake response.\n");
+        logToFile2("MWS: Failed to receive handshake response.\n");
         return -1;
     }
     buffer[bytes_received] = '\0';
-    logToFile2("Received handshake response.\n");
+    logToFile2("MWS: Received handshake response.\n");
 
     // Check for "HTTP/1.1 101" status
     if (strstr(buffer, "HTTP/1.1 101") == NULL) {
-        logToFile2("Invalid handshake response: HTTP/1.1 101 not found.\n");
+        logToFile2("MWS: Invalid handshake response: HTTP/1.1 101 not found.\n");
         return -1;
     }
-    logToFile2("HTTP/1.1 101 status found in response.\n");
+    logToFile2("MWS: HTTP/1.1 101 status found in response.\n");
 
     // Check for "Upgrade: websocket"
     if (strstr(buffer, "Upgrade: websocket") == NULL) {
-        logToFile2("Invalid handshake response: Upgrade: websocket not found.\n");
+        logToFile2("MWS: Invalid handshake response: Upgrade: websocket not found.\n");
         return -1;
     }
-    logToFile2("Upgrade: websocket found in response.\n");
+    logToFile2("MWS: Upgrade: websocket found in response.\n");
 
     // TODO: Verify Sec-WebSocket-Accept if needed
 
     ctx->state = WS_STATE_OPEN;
-    logToFile2("WebSocket connection established successfully.\n");
+    logToFile2("MWS: WebSocket connection established successfully.\n");
     return 0;
 }
 
@@ -144,25 +149,25 @@ int ws_init(void) {
 
 // Create a new WebSocket context
 ws_ctx* ws_create_ctx(void) {
-    logToFile2("Creating WebSocket context...\n");
+    logToFile2("MWS: Creating WebSocket context...\n");
     ws_ctx* ctx = (ws_ctx*)malloc(sizeof(ws_ctx));
     if (ctx) {
-        logToFile2("WebSocket context allocated successfully.\n");
+        logToFile2("MWS: WebSocket context allocated successfully.\n");
         memset(ctx, 0, sizeof(ws_ctx));
         ctx->state = WS_STATE_CLOSED;
         ctx->recv_buffer_size = 1024;
         ctx->recv_buffer = (char*)malloc(ctx->recv_buffer_size);
         if (ctx->recv_buffer) {
-            logToFile2("Receive buffer allocated successfully.\n");
+            logToFile2("MWS: Receive buffer allocated successfully.\n");
             ctx->recv_buffer_len = 0;
         } else {
-            logToFile2("Failed to allocate receive buffer.\n");
+            logToFile2("MWS: Failed to allocate receive buffer.\n");
             free(ctx);
             return NULL;
         }
-        logToFile2("WebSocket context initialized.\n");
+        logToFile2("MWS: WebSocket context initialized.\n");
     } else {
-        logToFile2("Failed to allocate WebSocket context.\n");
+        logToFile2("MWS: Failed to allocate WebSocket context.\n");
     }
     return ctx;
 }
@@ -172,7 +177,7 @@ static int try_connect_nonblocking(SOCKET sock, const struct addrinfo* addr, int
     // Set socket to non-blocking mode
     unsigned long mode = 1;
     if (ioctlsocket(sock, FIONBIO, &mode) != 0) {
-        logToFile2("Failed to set non-blocking mode\n");
+        logToFile2("MWS: Failed to set non-blocking mode\n");
         return -1;
     }
 
@@ -199,16 +204,16 @@ static int try_connect_nonblocking(SOCKET sock, const struct addrinfo* addr, int
 
         result = select(sock + 1, NULL, &write_fds, &except_fds, &tv);
         if (result == 0) {
-            logToFile2("Connection attempt timed out\n");
+            logToFile2("MWS: Connection attempt timed out\n");
             return -2;  // Special code for timeout
         }
         if (result == SOCKET_ERROR) {
-            logToFile2("Select failed\n");
+            logToFile2("MWS: Select failed\n");
             return -1;
         }
 
         if (FD_ISSET(sock, &except_fds)) {
-            logToFile2("Connection failed (exception)\n");
+            logToFile2("MWS: Connection failed (exception)\n");
             return -1;
         }
 
@@ -228,7 +233,7 @@ static int try_connect_nonblocking(SOCKET sock, const struct addrinfo* addr, int
     // Set socket back to blocking mode
     mode = 0;
     if (ioctlsocket(sock, FIONBIO, &mode) != 0) {
-        logToFile2("Failed to set blocking mode\n");
+        logToFile2("MWS: Failed to set blocking mode\n");
         return -1;
     }
 
@@ -237,7 +242,7 @@ static int try_connect_nonblocking(SOCKET sock, const struct addrinfo* addr, int
 
 // Modified ws_connect function
 int ws_connect(ws_ctx* ctx, const char* uri) {
-    logToFile2("Attempting to connect to WebSocket server\n");
+    logToFile2("MWS: Attempting to connect to WebSocket server\n");
     
     // Parse URI
     char schema[10], host[256], path[256];
@@ -246,7 +251,7 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
                  host, (unsigned)sizeof(host), &port, path, (unsigned)sizeof(path)) < 3) {
         if (sscanf_s(uri, "%9[^:]://%255[^/]%255s", schema, (unsigned)sizeof(schema), 
                      host, (unsigned)sizeof(host), path, (unsigned)sizeof(path)) < 3) {
-            logToFile2("Failed to parse URI\n");
+            logToFile2("MWS: Failed to parse URI\n");
             return -1;
         }
         port = strcmp(schema, "wss") == 0 ? 443 : 80;
@@ -296,18 +301,18 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
     // Proceed with WebSocket handshake
     ctx->state = WS_STATE_CONNECTING;
     if (ws_send_handshake(ctx, host, path) != 0) {
-        logToFile2("Failed to send WebSocket handshake\n");
+        logToFile2("MWS: Failed to send WebSocket handshake\n");
         closesocket(ctx->socket);
         return -1;
     }
 
     if (ws_parse_handshake_response(ctx) != 0) {
-        logToFile2("Failed to parse WebSocket handshake response\n");
+        logToFile2("MWS: Failed to parse WebSocket handshake response\n");
         closesocket(ctx->socket);
         return -1;
     }
 
-    logToFile2("WebSocket connection established successfully\n");
+    logToFile2("MWS: WebSocket connection established successfully\n");
     return 0;
 }
 
@@ -402,13 +407,13 @@ int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
         return -1;  // Return error if not all bytes were sent
     }
 
-    logToFile2("WebSocket frame sent successfully\n");
+    logToFile2("MWS: WebSocket frame sent successfully\n");
     return 0;
 }
 
 // Receive data from WebSocket
 int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
-    logToFile2("Receiving WebSocket frame...\n");
+    logToFile2("MWS: Receiving WebSocket frame...\n");
 
     if (ctx->state != WS_STATE_OPEN) {
         // printf("Error: WebSocket not in OPEN state\n");
@@ -522,44 +527,26 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
 
 // Close WebSocket connection
 int ws_close(ws_ctx* ctx) {
-    logToFile2("Closing WebSocket connection...\n");
+    logToFile2("MWS: Closing WebSocket connection...\n");
 
     if (ctx->state == WS_STATE_OPEN) {
-        // Send close frame
-        uint8_t close_frame[] = { 0x88, 0x02, 0x03, 0xE8 }; // Status code 1000 (normal closure)
-        int sent = send(ctx->socket, (char*)close_frame, sizeof(close_frame), 0);
-        if (sent != sizeof(close_frame)) {
-            // printf("Failed to send close frame\n");
-            return -1;
-        }
-        ctx->state = WS_STATE_CLOSING;
-
-        // Wait for the server's close frame (with a timeout)
+        // Send close frame with status code 1000 (normal closure)
+        uint8_t close_frame[] = { 0x88, 0x02, 0x03, 0xE8 };
+        send(ctx->socket, (char*)close_frame, sizeof(close_frame), 0);
+        
+        // Set shorter timeout for waiting close response
+        DWORD timeout = 5000; // 5 seconds
+        setsockopt(ctx->socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+        
+        // Wait for close frame response
         char buffer[1024];
-        int recv_result;
-        struct timeval tv;
-        tv.tv_sec = 5;  // 5 seconds timeout
-        tv.tv_usec = 0;
-        setsockopt(ctx->socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-
-        do {
-            recv_result = recv(ctx->socket, buffer, sizeof(buffer), 0);
-            if (recv_result > 0) {
-                if ((buffer[0] & 0x0F) == 0x8) {
-                    // printf("Received close frame from server\n");
-                    break;
-                }
-            }
-        } while (recv_result > 0);
-
-        if (recv_result <= 0) {
-            // printf("Timeout or error while waiting for server's close frame\n");
-        }
+        recv(ctx->socket, buffer, sizeof(buffer), 0);
+        
+        ctx->state = WS_STATE_CLOSED;
+        closesocket(ctx->socket);
+        logToFile2("MWS: WebSocket connection closed properly\n");
     }
 
-    closesocket(ctx->socket);
-    ctx->state = WS_STATE_CLOSED;
-    logToFile2("WebSocket connection closed\n");
     return 0;
 }
 
@@ -592,106 +579,160 @@ void print_hex2(const uint8_t* data, size_t length) {
     // printf("\n");
 }
 
-// New function to handle ping
+// Modified ws_handle_ping function
 static int ws_handle_ping(ws_ctx* ctx) {
-    logToFile2("Handling ping frame...\n");
-    uint8_t pong_frame[] = { 0x8A, 0x00 }; // Pong frame with no payload
-    int sent = send(ctx->socket, (char*)pong_frame, sizeof(pong_frame), 0);
-    if (sent != sizeof(pong_frame)) {
-        // printf("Failed to send pong frame\n");
+    logToFile2("MWS: Handling ping frame...\n");
+
+    // Peek at the header to determine payload length
+    uint8_t header[2];
+    int bytes_received = recv(ctx->socket, (char*)header, 2, MSG_PEEK);
+    if (bytes_received != 2) {
+        logToFile2("MWS: Failed to peek ping frame header\n");
         return -1;
     }
-    logToFile2("Pong frame sent\n");
+
+    uint8_t payload_length = header[1] & 0x7F;
+    size_t frame_size = 2 + payload_length;
+
+    // Handle extended payload lengths
+    if (payload_length == 126) {
+        uint16_t extended_length;
+        bytes_received = recv(ctx->socket, (char*)&extended_length, 2, MSG_PEEK);
+        if (bytes_received != 2) {
+            logToFile2("MWS: Failed to peek extended length (16-bit)\n");
+            return -1;
+        }
+        payload_length = ntohs(extended_length);
+        frame_size = 4 + payload_length; // 2 bytes for header + 2 for extended length
+    } else if (payload_length == 127) {
+        uint64_t extended_length;
+        bytes_received = recv(ctx->socket, (char*)&extended_length, 8, MSG_PEEK);
+        if (bytes_received != 8) {
+            logToFile2("MWS: Failed to peek extended length (64-bit)\n");
+            return -1;
+        }
+        payload_length = ntohll(extended_length);
+        frame_size = 10 + payload_length; // 2 bytes for header + 8 for extended length
+    }
+
+    // Allocate buffer for the entire frame
+    uint8_t* frame_buffer = (uint8_t*)malloc(frame_size);
+    if (!frame_buffer) {
+        logToFile2("MWS: Failed to allocate memory for frame buffer\n");
+        return -1;
+    }
+
+    // Read the entire frame
+    bytes_received = recv(ctx->socket, (char*)frame_buffer, frame_size, 0);
+    if (bytes_received != frame_size) {
+        logToFile2("MWS: Failed to read complete ping frame\n");
+        free(frame_buffer);
+        return -1;
+    }
+
+    // Create pong frame
+    uint8_t* pong_frame = (uint8_t*)malloc(frame_size);
+    if (!pong_frame) {
+        logToFile2("MWS: Failed to allocate memory for pong frame\n");
+        free(frame_buffer);
+        return -1;
+    }
+
+    // Copy the payload from the ping frame to the pong frame
+    pong_frame[0] = 0x8A;  // Pong opcode
+    pong_frame[1] = frame_buffer[1]; // Copy the length byte
+    memcpy(pong_frame + 2, frame_buffer + 2, payload_length);
+
+    // Log the received ping frame
+    logToFile2("MWS: Received ping frame: ");
+    printByteArrayToFile2((const char*)frame_buffer, frame_size);
+    logToFile2("\n");
+
+    // Send the pong frame
+    int sent = send(ctx->socket, (char*)pong_frame, frame_size, 0);
+    logToFile2("MWS: Sending pong frame: ");
+    printByteArrayToFile2((const char*)pong_frame, frame_size);
+    logToFile2("\n");
+
+    free(frame_buffer);
+    free(pong_frame);
+
+    if (sent != frame_size) {
+        logToFile2("MWS: Failed to send pong frame\n");
+        return -1;
+    }
+
+    logToFile2("MWS: Pong frame sent successfully\n");
     return 0;
 }
 
 // Modified ws_service function
 int ws_service(ws_ctx* ctx) {
-    logToFile2("Servicing WebSocket connection...\n");
+    logToFile2("MWS: Servicing WebSocket connection for ping/pong...\n");
+
+    // Handle incoming frames
+    uint8_t header[2];
+    int bytes_received = recv(ctx->socket, (char*)header, 2, MSG_PEEK);
+    if (bytes_received > 0) {
+        int opcode = header[0] & 0x0F;
+
+        // Handle ping and pong frame types
+        switch(opcode) {
+            case 0x9: // Ping
+                logToFile2("MWS: Received ping frame\n");
+                return ws_handle_ping(ctx);
+
+            case 0xA: // Pong
+                logToFile2("MWS: Received pong frame\n");
+                // Consume the pong frame
+                uint8_t payload_length = header[1] & 0x7F;
+                char discard[256];
+                recv(ctx->socket, discard, 2 + payload_length, 0);
+                return 0;
+
+            case 0x8: // Close
+                logToFile2("MWS: Received close frame\n");
+                // Consume the close frame
+                recv(ctx->socket, (char*)header, 2, 0);
+                ws_close(ctx);
+                return -1;
+        }
+    }
+
+    // Send periodic ping if needed
     static time_t last_ping_time = 0;
     time_t current_time = time(NULL);
 
-    // Check if it's time to send a ping
-    if (current_time - last_ping_time >= HEARTBEAT_INTERVAL) {
-        logToFile2("Sending ping frame...\n");
-        uint8_t ping_frame[] = { 0x89, 0x00 }; // Ping frame with no payload
-        int sent = send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0);
-        if (sent != sizeof(ping_frame)) {
-            // printf("Failed to send ping frame\n");
-            return -1;
+    if (current_time - last_ping_time >= (PING_TIMEOUT_MS / 1000)) {
+        uint8_t ping_frame[] = { 0x89, 0x00 };
+        if (send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0) != sizeof(ping_frame)) {
+            logToFile2("MWS: Failed to send ping frame\n");
+            return -1; // Possible return value: -1 (failure to send ping)
         }
-        last_ping_time = current_time;
 
-        // Wait for pong response
+        // Wait for pong with timeout
         fd_set read_fds;
         struct timeval tv;
         FD_ZERO(&read_fds);
         FD_SET(ctx->socket, &read_fds);
-        tv.tv_sec = HEARTBEAT_TIMEOUT;
-        tv.tv_usec = 0;
+        tv.tv_sec = PONG_TIMEOUT_MS / 1000;
+        tv.tv_usec = (PONG_TIMEOUT_MS % 1000) * 1000;
 
-        int select_result = select(ctx->socket + 1, &read_fds, NULL, NULL, &tv);
-        if (select_result == -1) {
-            // printf("Select error\n");
-            return -1;
-        }
-        else if (select_result == 0) {
-            logToFile2("Pong timeout\n");
-            return -1;
+        if (select(ctx->socket + 1, &read_fds, NULL, NULL, &tv) <= 0) {
+            logToFile2("MWS: Pong timeout - closing connection\n");
+            ws_close(ctx);
+            return -1; // Possible return value: -1 (pong timeout)
         }
 
-        // Receive the pong frame
-        uint8_t header[2];
-        int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
-        if (bytes_received != 2) {
-            // printf("Error receiving pong header\n");
-            return -1;
-        }
-
-        int opcode = header[0] & 0x0F;
-        if (opcode != 0xA) { // 0xA is the opcode for pong
-            char logBuffer[256];
-            snprintf(logBuffer, sizeof(logBuffer), "Unexpected frame received (opcode: 0x%02X)\n", opcode);
-            logToFile2(logBuffer);
-            return -1;
-        }
-        logToFile2("Pong received successfully\n");
+        last_ping_time = current_time;
     }
 
-    // Check for incoming frames
-    fd_set read_fds;
-    struct timeval tv;
-    FD_ZERO(&read_fds);
-    FD_SET(ctx->socket, &read_fds);
-    tv.tv_sec = 0;
-    tv.tv_usec = 0;
-
-    int select_result = select(ctx->socket + 1, &read_fds, NULL, NULL, &tv);
-    if (select_result == -1) {
-        // printf("Select error\n");
-        return -1;
-    }
-    else if (select_result > 0) {
-        uint8_t header[2];
-        int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
-        if (bytes_received != 2) {
-            // printf("Error receiving frame header\n");
-            return -1;
-        }
-
-        int opcode = header[0] & 0x0F;
-        if (opcode == 0x9) { // 0x9 is the opcode for ping
-            return ws_handle_ping(ctx);
-        }
-        // Handle other frame types if needed
-    }
-
-    return 0;
+    return 0; // Possible return value: 0 (success, no ping/pong activity)
 }
 
 // Function to check if server is available at TCP level
 int ws_check_server_available(const char* host, int port) {
-    logToFile2("Checking server availability...\n");
+    logToFile2("MWS: Checking server availability...\n");
     
     struct addrinfo hints, *result;
     memset(&hints, 0, sizeof(hints));
@@ -702,13 +743,13 @@ int ws_check_server_available(const char* host, int port) {
     snprintf(port_str, sizeof(port_str), "%d", port);
 
     if (getaddrinfo(host, port_str, &hints, &result) != 0) {
-        logToFile2("Failed to get address info\n");
+        logToFile2("MWS: Failed to get address info\n");
         return 0;
     }
 
     SOCKET sock = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
     if (sock == INVALID_SOCKET) {
-        logToFile2("Failed to create socket\n");
+        logToFile2("MWS: Failed to create socket\n");
         freeaddrinfo(result);
         return 0;
     }
@@ -716,7 +757,7 @@ int ws_check_server_available(const char* host, int port) {
     // Set socket to non-blocking mode
     unsigned long mode = 1;
     if (ioctlsocket(sock, FIONBIO, &mode) != 0) {
-        logToFile2("Failed to set non-blocking mode\n");
+        logToFile2("MWS: Failed to set non-blocking mode\n");
         closesocket(sock);
         freeaddrinfo(result);
         return 0;
@@ -737,7 +778,7 @@ int ws_check_server_available(const char* host, int port) {
         int error = 0;
         int len = sizeof(error);
         if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&error, &len) == 0 && error == 0) {
-            logToFile2("Server is available\n");
+            logToFile2("MWS: Server is available\n");
             available = 1;
         } else {
             char errMsg[256];
@@ -745,10 +786,156 @@ int ws_check_server_available(const char* host, int port) {
             logToFile2(errMsg);
         }
     } else {
-        logToFile2("Connection attempt timed out\n");
+        logToFile2("MWS: Connection attempt timed out\n");
     }
 
     closesocket(sock);
     freeaddrinfo(result);
     return available;
 }
+
+
+
+// Existing includes and definitions above...
+
+/**
+ * @brief Checks if the TCP connection is still alive.
+ *
+ * This function performs a non-blocking check to determine if the TCP connection
+ * associated with the provided WebSocket context is still active. It uses the
+ * `select` function to monitor the socket for readability. If the socket is
+ * readable, it attempts to peek at incoming data without removing it from the
+ * queue. A return value of 0 indicates that the connection has been closed,
+ * while a return value of 1 indicates that the connection is still alive.
+ *
+ * @param ctx Pointer to the WebSocket context.
+ * @return int Returns 1 if the connection is alive, 0 otherwise.
+ */
+int ws_check_connection(ws_ctx* ctx) {
+    if (ctx == NULL || ctx->socket == INVALID_SOCKET) {
+        logToFile2("MWS: Invalid WebSocket context or socket.\n");
+        return 0;
+    }
+
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(ctx->socket, &read_fds);
+
+    // Set timeout to zero for a non-blocking check
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+
+    // Perform the select call to check for readability
+    int select_result = select(0, &read_fds, NULL, NULL, &tv);
+    if (select_result == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        char errMsg[256];
+        snprintf(errMsg, sizeof(errMsg), "select() failed with error: %d\n", error);
+        logToFile2(errMsg);
+        return 0;
+    }
+
+    if (FD_ISSET(ctx->socket, &read_fds)) {
+        // There is data to read or the connection has been closed
+        char buffer;
+        int recv_result = recv(ctx->socket, &buffer, 1, MSG_PEEK);
+        if (recv_result == 0) {
+            // Connection has been gracefully closed
+            logToFile2("MWS: Connection has been closed by the server.\n");
+            return 0;
+        } else if (recv_result < 0) {
+            int error = WSAGetLastError();
+            if (error == WSAEWOULDBLOCK || error == WSAEINPROGRESS) {
+                // No data available to read, but connection is still alive
+                return 1;
+            } else {
+                // An error occurred, assume connection is closed
+                char errMsg[256];
+                snprintf(errMsg, sizeof(errMsg), "recv() failed with error: %d\n", error);
+                logToFile2(errMsg);
+                return 0;
+            }
+        } else {
+            // Data is available to read, connection is alive
+            return 1;
+        }
+    }
+
+    // No data to read, connection is still alive
+    return 1;
+}
+
+/**
+ * @brief Example function to run ws_check_connection in a separate loop.
+ *
+ * This function demonstrates how to create a separate thread that periodically
+ * checks the connection status using ws_check_connection. If the connection
+ * is found to be closed, it updates the WebSocket context state accordingly.
+ *
+ * @param ctx Pointer to the WebSocket context.
+ * @return DWORD WINAPI Returns zero on thread exit.
+ */
+DWORD WINAPI ConnectionMonitorThread(LPVOID lpParam) {
+    ws_ctx* ctx = (ws_ctx*)lpParam;
+    if (ctx == NULL) {
+        logToFile2("MWS: ConnectionMonitorThread received NULL context.\n");
+        return 1;
+    }
+
+    while (ws_get_state(ctx) != WS_STATE_CLOSED) {
+        int is_alive = ws_check_connection(ctx);
+        if (!is_alive) {
+            logToFile2("MWS: Disconnected detected by ConnectionMonitorThread.\n");
+            ws_close(ctx);
+            break;
+        }
+
+        // Check every 5 seconds
+        Sleep(5000);
+    }
+
+    logToFile2("MWS: ConnectionMonitorThread exiting.\n");
+    return 0;
+}
+
+/**
+ * @brief Starts the connection monitor thread.
+ *
+ * This function creates a new thread that runs the ConnectionMonitorThread
+ * function, which periodically checks the connection status.
+ *
+ * @param ctx Pointer to the WebSocket context.
+ * @return int Returns 0 on success, non-zero on failure.
+ */
+int ws_start_connection_monitor(ws_ctx* ctx) {
+    if (ctx == NULL) {
+        logToFile2("MWS: ws_start_connection_monitor received NULL context.\n");
+        return -1;
+    }
+
+    HANDLE thread = CreateThread(
+        NULL,                   // default security attributes
+        0,                      // default stack size
+        ConnectionMonitorThread, // thread function
+        ctx,                    // parameter to thread function
+        0,                      // default creation flags
+        NULL                    // receive thread identifier
+    );
+
+    if (thread == NULL) {
+        int error = GetLastError();
+        char errMsg[256];
+        snprintf(errMsg, sizeof(errMsg), "Failed to create connection monitor thread. Error: %d\n", error);
+        logToFile2(errMsg);
+        return -1;
+    }
+
+    // Close the thread handle as it's not needed
+    CloseHandle(thread);
+    logToFile2("MWS: Connection monitor thread started successfully.\n");
+    return 0;
+}
+
+
+
