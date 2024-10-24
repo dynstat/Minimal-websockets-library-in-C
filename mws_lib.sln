@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "mws_lib", "mws_lib.vcxproj"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "test-mws", "test-mws\test-mws.vcxproj", "{095B2DFD-5293-414D-BF7A-92B2CD4C173F}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "test-nb", "test-nb\test-nb.vcxproj", "{F73C29AC-594A-407E-9277-2D608ADDA0EB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -31,6 +33,14 @@ Global
 		{095B2DFD-5293-414D-BF7A-92B2CD4C173F}.Release|x64.Build.0 = Release|x64
 		{095B2DFD-5293-414D-BF7A-92B2CD4C173F}.Release|x86.ActiveCfg = Release|Win32
 		{095B2DFD-5293-414D-BF7A-92B2CD4C173F}.Release|x86.Build.0 = Release|Win32
+		{F73C29AC-594A-407E-9277-2D608ADDA0EB}.Debug|x64.ActiveCfg = Debug|x64
+		{F73C29AC-594A-407E-9277-2D608ADDA0EB}.Debug|x64.Build.0 = Debug|x64
+		{F73C29AC-594A-407E-9277-2D608ADDA0EB}.Debug|x86.ActiveCfg = Debug|Win32
+		{F73C29AC-594A-407E-9277-2D608ADDA0EB}.Debug|x86.Build.0 = Debug|Win32
+		{F73C29AC-594A-407E-9277-2D608ADDA0EB}.Release|x64.ActiveCfg = Release|x64
+		{F73C29AC-594A-407E-9277-2D608ADDA0EB}.Release|x64.Build.0 = Release|x64
+		{F73C29AC-594A-407E-9277-2D608ADDA0EB}.Release|x86.ActiveCfg = Release|Win32
+		{F73C29AC-594A-407E-9277-2D608ADDA0EB}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

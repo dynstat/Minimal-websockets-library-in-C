@@ -5,8 +5,9 @@
 // Windows-specific includes and definitions
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <winsock2.h>
+#include <winsock2.h>                                               
 #include <ws2tcpip.h>
+
 
 // Link with Ws2_32.lib
 #pragma comment(lib, "Ws2_32.lib")
@@ -719,4 +720,147 @@ int ws_check_server_available(const char* host, int port) {
     closesocket(sock);
     freeaddrinfo(result);
     return available;
+}
+
+
+
+// Existing includes and definitions above...
+
+/**
+ * @brief Checks if the TCP connection is still alive.
+ *
+ * This function performs a non-blocking check to determine if the TCP connection
+ * associated with the provided WebSocket context is still active. It uses the
+ * `select` function to monitor the socket for readability. If the socket is
+ * readable, it attempts to peek at incoming data without removing it from the
+ * queue. A return value of 0 indicates that the connection has been closed,
+ * while a return value of 1 indicates that the connection is still alive.
+ *
+ * @param ctx Pointer to the WebSocket context.
+ * @return int Returns 1 if the connection is alive, 0 otherwise.
+ */
+int ws_check_connection(ws_ctx* ctx) {
+    if (ctx == NULL || ctx->socket == INVALID_SOCKET) {
+        logToFile2("Invalid WebSocket context or socket.\n");
+        return 0;
+    }
+
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(ctx->socket, &read_fds);
+
+    // Set timeout to zero for a non-blocking check
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+
+    // Perform the select call to check for readability
+    int select_result = select(0, &read_fds, NULL, NULL, &tv);
+    if (select_result == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        char errMsg[256];
+        snprintf(errMsg, sizeof(errMsg), "select() failed with error: %d\n", error);
+        logToFile2(errMsg);
+        return 0;
+    }
+
+    if (FD_ISSET(ctx->socket, &read_fds)) {
+        // There is data to read or the connection has been closed
+        char buffer;
+        int recv_result = recv(ctx->socket, &buffer, 1, MSG_PEEK);
+        if (recv_result == 0) {
+            // Connection has been gracefully closed
+            logToFile2("Connection has been closed by the server.\n");
+            return 0;
+        } else if (recv_result < 0) {
+            int error = WSAGetLastError();
+            if (error == WSAEWOULDBLOCK || error == WSAEINPROGRESS) {
+                // No data available to read, but connection is still alive
+                return 1;
+            } else {
+                // An error occurred, assume connection is closed
+                char errMsg[256];
+                snprintf(errMsg, sizeof(errMsg), "recv() failed with error: %d\n", error);
+                logToFile2(errMsg);
+                return 0;
+            }
+        } else {
+            // Data is available to read, connection is alive
+            return 1;
+        }
+    }
+
+    // No data to read, connection is still alive
+    return 1;
+}
+
+/**
+ * @brief Example function to run ws_check_connection in a separate loop.
+ *
+ * This function demonstrates how to create a separate thread that periodically
+ * checks the connection status using ws_check_connection. If the connection
+ * is found to be closed, it updates the WebSocket context state accordingly.
+ *
+ * @param ctx Pointer to the WebSocket context.
+ * @return DWORD WINAPI Returns zero on thread exit.
+ */
+DWORD WINAPI ConnectionMonitorThread(LPVOID lpParam) {
+    ws_ctx* ctx = (ws_ctx*)lpParam;
+    if (ctx == NULL) {
+        logToFile2("ConnectionMonitorThread received NULL context.\n");
+        return 1;
+    }
+
+    while (ws_get_state(ctx) != WS_STATE_CLOSED) {
+        int is_alive = ws_check_connection(ctx);
+        if (!is_alive) {
+            logToFile2("Disconnected detected by ConnectionMonitorThread.\n");
+            ws_close(ctx);
+            break;
+        }
+
+        // Check every 5 seconds
+        Sleep(5000);
+    }
+
+    logToFile2("ConnectionMonitorThread exiting.\n");
+    return 0;
+}
+
+/**
+ * @brief Starts the connection monitor thread.
+ *
+ * This function creates a new thread that runs the ConnectionMonitorThread
+ * function, which periodically checks the connection status.
+ *
+ * @param ctx Pointer to the WebSocket context.
+ * @return int Returns 0 on success, non-zero on failure.
+ */
+int ws_start_connection_monitor(ws_ctx* ctx) {
+    if (ctx == NULL) {
+        logToFile2("ws_start_connection_monitor received NULL context.\n");
+        return -1;
+    }
+
+    HANDLE thread = CreateThread(
+        NULL,                   // default security attributes
+        0,                      // default stack size
+        ConnectionMonitorThread, // thread function
+        ctx,                    // parameter to thread function
+        0,                      // default creation flags
+        NULL                    // receive thread identifier
+    );
+
+    if (thread == NULL) {
+        int error = GetLastError();
+        char errMsg[256];
+        snprintf(errMsg, sizeof(errMsg), "Failed to create connection monitor thread. Error: %d\n", error);
+        logToFile2(errMsg);
+        return -1;
+    }
+
+    // Close the thread handle as it's not needed
+    CloseHandle(thread);
+    logToFile2("Connection monitor thread started successfully.\n");
+    return 0;
 }
