@@ -45,6 +45,9 @@ extern "C" {
     // Initialize the WebSocket library
     int ws_init(void);
 
+    // Check if server is available at TCP level
+    int ws_check_server_available(const char* host, int port);
+
     // Create a new WebSocket context
     ws_ctx* ws_create_ctx(void);
 
