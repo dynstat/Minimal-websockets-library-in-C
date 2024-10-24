@@ -18,6 +18,10 @@
 #define HEARTBEAT_INTERVAL 30 // 30 seconds
 #define HEARTBEAT_TIMEOUT 10 // 10 seconds
 
+// Add these constants at the top if not already present
+#define PING_TIMEOUT_MS 30000  // 30 seconds
+#define PONG_TIMEOUT_MS 10000  // 10 seconds
+
 // // WebSocket context structure
 // struct ws_ctx {
 //     SOCKET socket;        // Socket handle for the WebSocket connection
@@ -525,41 +529,23 @@ int ws_close(ws_ctx* ctx) {
     logToFile2("Closing WebSocket connection...\n");
 
     if (ctx->state == WS_STATE_OPEN) {
-        // Send close frame
-        uint8_t close_frame[] = { 0x88, 0x02, 0x03, 0xE8 }; // Status code 1000 (normal closure)
-        int sent = send(ctx->socket, (char*)close_frame, sizeof(close_frame), 0);
-        if (sent != sizeof(close_frame)) {
-            // printf("Failed to send close frame\n");
-            return -1;
-        }
-        ctx->state = WS_STATE_CLOSING;
-
-        // Wait for the server's close frame (with a timeout)
+        // Send close frame with status code 1000 (normal closure)
+        uint8_t close_frame[] = { 0x88, 0x02, 0x03, 0xE8 };
+        send(ctx->socket, (char*)close_frame, sizeof(close_frame), 0);
+        
+        // Set shorter timeout for waiting close response
+        DWORD timeout = 5000; // 5 seconds
+        setsockopt(ctx->socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+        
+        // Wait for close frame response
         char buffer[1024];
-        int recv_result;
-        struct timeval tv;
-        tv.tv_sec = 5;  // 5 seconds timeout
-        tv.tv_usec = 0;
-        setsockopt(ctx->socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-
-        do {
-            recv_result = recv(ctx->socket, buffer, sizeof(buffer), 0);
-            if (recv_result > 0) {
-                if ((buffer[0] & 0x0F) == 0x8) {
-                    // printf("Received close frame from server\n");
-                    break;
-                }
-            }
-        } while (recv_result > 0);
-
-        if (recv_result <= 0) {
-            // printf("Timeout or error while waiting for server's close frame\n");
-        }
+        recv(ctx->socket, buffer, sizeof(buffer), 0);
+        
+        ctx->state = WS_STATE_CLOSED;
+        closesocket(ctx->socket);
+        logToFile2("WebSocket connection closed properly\n");
     }
 
-    closesocket(ctx->socket);
-    ctx->state = WS_STATE_CLOSED;
-    logToFile2("WebSocket connection closed\n");
     return 0;
 }
 
@@ -608,82 +594,64 @@ static int ws_handle_ping(ws_ctx* ctx) {
 // Modified ws_service function
 int ws_service(ws_ctx* ctx) {
     logToFile2("Servicing WebSocket connection...\n");
+    
+    // Set socket timeout for receiving data
+    DWORD timeout = PING_TIMEOUT_MS;
+    if (setsockopt(ctx->socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout)) != 0) {
+        logToFile2("Failed to set socket timeout\n");
+        return -1;
+    }
+
+    // Handle incoming frames
+    uint8_t header[2];
+    int bytes_received = recv(ctx->socket, (char*)header, 2, MSG_PEEK);
+    if (bytes_received > 0) {
+        int opcode = header[0] & 0x0F;
+        
+        // Handle different frame types
+        switch(opcode) {
+            case 0x9: // Ping
+                logToFile2("Received ping, sending pong...\n");
+                return ws_handle_ping(ctx);
+                
+            case 0xA: // Pong
+                logToFile2("Received pong\n");
+                recv(ctx->socket, (char*)header, 2, 0); // Remove from queue
+                return 0;
+                
+            case 0x8: // Close
+                logToFile2("Received close frame\n");
+                ws_close(ctx);
+                return -1;
+        }
+    }
+    
+    // Send periodic ping if needed
     static time_t last_ping_time = 0;
     time_t current_time = time(NULL);
-
-    // Check if it's time to send a ping
-    if (current_time - last_ping_time >= HEARTBEAT_INTERVAL) {
-        logToFile2("Sending ping frame...\n");
-        uint8_t ping_frame[] = { 0x89, 0x00 }; // Ping frame with no payload
-        int sent = send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0);
-        if (sent != sizeof(ping_frame)) {
-            // printf("Failed to send ping frame\n");
+    
+    if (current_time - last_ping_time >= (PING_TIMEOUT_MS / 1000)) {
+        uint8_t ping_frame[] = { 0x89, 0x00 };
+        if (send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0) != sizeof(ping_frame)) {
+            logToFile2("Failed to send ping frame\n");
             return -1;
         }
-        last_ping_time = current_time;
-
-        // Wait for pong response
+        
+        // Wait for pong with timeout
         fd_set read_fds;
         struct timeval tv;
         FD_ZERO(&read_fds);
         FD_SET(ctx->socket, &read_fds);
-        tv.tv_sec = HEARTBEAT_TIMEOUT;
-        tv.tv_usec = 0;
+        tv.tv_sec = PONG_TIMEOUT_MS / 1000;
+        tv.tv_usec = (PONG_TIMEOUT_MS % 1000) * 1000;
 
-        int select_result = select(ctx->socket + 1, &read_fds, NULL, NULL, &tv);
-        if (select_result == -1) {
-            // printf("Select error\n");
+        if (select(ctx->socket + 1, &read_fds, NULL, NULL, &tv) <= 0) {
+            logToFile2("Pong timeout - closing connection\n");
+            ws_close(ctx);
             return -1;
         }
-        else if (select_result == 0) {
-            logToFile2("Pong timeout\n");
-            return -1;
-        }
-
-        // Receive the pong frame
-        uint8_t header[2];
-        int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
-        if (bytes_received != 2) {
-            // printf("Error receiving pong header\n");
-            return -1;
-        }
-
-        int opcode = header[0] & 0x0F;
-        if (opcode != 0xA) { // 0xA is the opcode for pong
-            char logBuffer[256];
-            snprintf(logBuffer, sizeof(logBuffer), "Unexpected frame received (opcode: 0x%02X)\n", opcode);
-            logToFile2(logBuffer);
-            return -1;
-        }
-        logToFile2("Pong received successfully\n");
-    }
-
-    // Check for incoming frames
-    fd_set read_fds;
-    struct timeval tv;
-    FD_ZERO(&read_fds);
-    FD_SET(ctx->socket, &read_fds);
-    tv.tv_sec = 0;
-    tv.tv_usec = 0;
-
-    int select_result = select(ctx->socket + 1, &read_fds, NULL, NULL, &tv);
-    if (select_result == -1) {
-        // printf("Select error\n");
-        return -1;
-    }
-    else if (select_result > 0) {
-        uint8_t header[2];
-        int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
-        if (bytes_received != 2) {
-            // printf("Error receiving frame header\n");
-            return -1;
-        }
-
-        int opcode = header[0] & 0x0F;
-        if (opcode == 0x9) { // 0x9 is the opcode for ping
-            return ws_handle_ping(ctx);
-        }
-        // Handle other frame types if needed
+        
+        last_ping_time = current_time;
     }
 
     return 0;
