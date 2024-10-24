@@ -51,7 +51,7 @@ async def echo(websocket: websockets.WebSocketServerProtocol):
     except websockets.exceptions.ConnectionClosedError as e:
         # If the connection is closed unexpectedly, this exception is caught
         # We simply pass, effectively closing the connection gracefully
-        print(f"\nConnection closed reason: CLIENT DISCONNECTED\n\n")
+        print(f"\nConnection closed reason: CLIENT DISCONNECTED: {e}\n\n")
 
 # Define an asynchronous function named 'main' that sets up the server
 async def main():
