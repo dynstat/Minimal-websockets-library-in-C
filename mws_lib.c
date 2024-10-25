@@ -579,26 +579,99 @@ void print_hex2(const uint8_t* data, size_t length) {
     // printf("\n");
 }
 
-// New function to handle ping
+// Modified ws_handle_ping function
 static int ws_handle_ping(ws_ctx* ctx) {
     logToFile2("MWS: Handling ping frame...\n");
-    uint8_t pong_frame[] = { 0x8A, 0x00 }; // Pong frame with no payload
-    int sent = send(ctx->socket, (char*)pong_frame, sizeof(pong_frame), 0);
-    if (sent != sizeof(pong_frame)) {
-        // printf("Failed to send pong frame\n");
+
+    // Peek at the header to determine payload length
+    uint8_t header[2];
+    int bytes_received = recv(ctx->socket, (char*)header, 2, MSG_PEEK);
+    if (bytes_received != 2) {
+        logToFile2("MWS: Failed to peek ping frame header\n");
         return -1;
     }
-    logToFile2("MWS: Pong frame sent\n");
+
+    uint8_t payload_length = header[1] & 0x7F;
+    size_t frame_size = 2 + payload_length;
+
+    // Handle extended payload lengths
+    if (payload_length == 126) {
+        uint16_t extended_length;
+        bytes_received = recv(ctx->socket, (char*)&extended_length, 2, MSG_PEEK);
+        if (bytes_received != 2) {
+            logToFile2("MWS: Failed to peek extended length (16-bit)\n");
+            return -1;
+        }
+        payload_length = ntohs(extended_length);
+        frame_size = 4 + payload_length; // 2 bytes for header + 2 for extended length
+    } else if (payload_length == 127) {
+        uint64_t extended_length;
+        bytes_received = recv(ctx->socket, (char*)&extended_length, 8, MSG_PEEK);
+        if (bytes_received != 8) {
+            logToFile2("MWS: Failed to peek extended length (64-bit)\n");
+            return -1;
+        }
+        payload_length = ntohll(extended_length);
+        frame_size = 10 + payload_length; // 2 bytes for header + 8 for extended length
+    }
+
+    // Allocate buffer for the entire frame
+    uint8_t* frame_buffer = (uint8_t*)malloc(frame_size);
+    if (!frame_buffer) {
+        logToFile2("MWS: Failed to allocate memory for frame buffer\n");
+        return -1;
+    }
+
+    // Read the entire frame
+    bytes_received = recv(ctx->socket, (char*)frame_buffer, frame_size, 0);
+    if (bytes_received != frame_size) {
+        logToFile2("MWS: Failed to read complete ping frame\n");
+        free(frame_buffer);
+        return -1;
+    }
+
+    // Create pong frame
+    uint8_t* pong_frame = (uint8_t*)malloc(frame_size);
+    if (!pong_frame) {
+        logToFile2("MWS: Failed to allocate memory for pong frame\n");
+        free(frame_buffer);
+        return -1;
+    }
+
+    // Copy the payload from the ping frame to the pong frame
+    pong_frame[0] = 0x8A;  // Pong opcode
+    pong_frame[1] = frame_buffer[1]; // Copy the length byte
+    memcpy(pong_frame + 2, frame_buffer + 2, payload_length);
+
+    // Log the received ping frame
+    logToFile2("MWS: Received ping frame: ");
+    printByteArrayToFile2((const char*)frame_buffer, frame_size);
+    logToFile2("\n");
+
+    // Send the pong frame
+    int sent = send(ctx->socket, (char*)pong_frame, frame_size, 0);
+    logToFile2("MWS: Sending pong frame: ");
+    printByteArrayToFile2((const char*)pong_frame, frame_size);
+    logToFile2("\n");
+
+    free(frame_buffer);
+    free(pong_frame);
+
+    if (sent != frame_size) {
+        logToFile2("MWS: Failed to send pong frame\n");
+        return -1;
+    }
+
+    logToFile2("MWS: Pong frame sent successfully\n");
     return 0;
 }
 
-// Modified ws_service function to handle only ping and pong frames
+// Modified ws_service function
 int ws_service(ws_ctx* ctx) {
     logToFile2("MWS: Servicing WebSocket connection for ping/pong...\n");
 
     // Handle incoming frames
     uint8_t header[2];
-    // Receive the first 2 bytes of the WebSocket frame header without removing it from the queue
     int bytes_received = recv(ctx->socket, (char*)header, 2, MSG_PEEK);
     if (bytes_received > 0) {
         int opcode = header[0] & 0x0F;
@@ -606,17 +679,23 @@ int ws_service(ws_ctx* ctx) {
         // Handle ping and pong frame types
         switch(opcode) {
             case 0x9: // Ping
-                logToFile2("MWS: Received ping, sending pong...\n");
-                return ws_handle_ping(ctx); // Possible return value: 0 (success) or -1 (failure)
+                logToFile2("MWS: Received ping frame\n");
+                return ws_handle_ping(ctx);
 
             case 0xA: // Pong
-                logToFile2("MWS: Received pong\n");
-                recv(ctx->socket, (char*)header, 2, 0); // Remove from queue
-                return 0; // Possible return value: 0 (success)
+                logToFile2("MWS: Received pong frame\n");
+                // Consume the pong frame
+                uint8_t payload_length = header[1] & 0x7F;
+                char discard[256];
+                recv(ctx->socket, discard, 2 + payload_length, 0);
+                return 0;
+
             case 0x8: // Close
                 logToFile2("MWS: Received close frame\n");
+                // Consume the close frame
+                recv(ctx->socket, (char*)header, 2, 0);
                 ws_close(ctx);
-                return -1; // Possible return value: -1 (connection closed)
+                return -1;
         }
     }
 
@@ -665,6 +744,7 @@ int ws_check_server_available(const char* host, int port) {
 
     if (getaddrinfo(host, port_str, &hints, &result) != 0) {
         logToFile2("MWS: Failed to get address info\n");
+        freeaddrinfo(result); 
         return 0;
     }
 
@@ -857,3 +937,6 @@ int ws_start_connection_monitor(ws_ctx* ctx) {
     logToFile2("MWS: Connection monitor thread started successfully.\n");
     return 0;
 }
+
+
+
