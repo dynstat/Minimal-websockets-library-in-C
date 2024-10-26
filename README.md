@@ -1,4 +1,4 @@
-# Simple WebSocket Library in C
+# Minimal WebSocket Library in C - mws_lib (TCP socket style without event loop)
 
 A straightforward WebSocket client library implemented in C for Windows using Winsock2. This library provides a TCP socket-style interface for WebSocket communication, making it easy to use without requiring an additional event loop at the application layer.
 
