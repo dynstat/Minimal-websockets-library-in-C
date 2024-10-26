@@ -44,6 +44,7 @@ This project is a Visual Studio solution containing two main components:
    - Select "Build" to compile the test program.
 
 4. **Run the Test Program**
+   - Run the websocket server first, run `python server-2.py`  
    - Right-click on the `test-mws` project.
    - Select "Set as Startup Project".
    - Press F5 or click "Start Debugging" to run the program.
