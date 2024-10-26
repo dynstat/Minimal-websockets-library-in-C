@@ -744,6 +744,7 @@ int ws_check_server_available(const char* host, int port) {
 
     if (getaddrinfo(host, port_str, &hints, &result) != 0) {
         logToFile2("MWS: Failed to get address info\n");
+        freeaddrinfo(result); 
         return 0;
     }
 
