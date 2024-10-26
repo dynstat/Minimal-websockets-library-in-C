@@ -113,17 +113,23 @@ async def echo(websocket: websockets.WebSocketServerProtocol):
             if hasattr(websocket, 'frame'):
                 print(f"\n{Fore.GREEN}Received Message Frame:{Style.RESET_ALL}")
                 print(format_frame_info(websocket.frame))
-
-            print(f"Received message content: {Fore.GREEN}{message[:100]}{'...' if len(message) > 100 else ''}{Style.RESET_ALL}")
+            
+            if isinstance(message, bytes):
+                print(f"Received message content: {Fore.GREEN}{message[:100].hex()}{'...' if len(message) > 100 else ''}{Style.RESET_ALL}")
+            else:
+                print(f"Received message content: {Fore.GREEN}{message[:100]}{'...' if len(message) > 100 else ''}{Style.RESET_ALL}")
             
             # Send response
             await websocket.send(message)
-            print(f"Sent: {Fore.YELLOW}{message[:100]}{'...' if len(message) > 100 else ''}{Style.RESET_ALL}")
+            if isinstance(message, bytes):
+                print(f"Sent: {Fore.YELLOW}{message[:100].hex()}{'...' if len(message) > 100 else ''}{Style.RESET_ALL}")
+            else:
+                print(f"Sent: {Fore.YELLOW}{message[:100]}{'...' if len(message) > 100 else ''}{Style.RESET_ALL}")
             
             # Send an additional message to the client
-            additional_message = "Server received your message!"
-            await websocket.send(additional_message)
-            print(f"Sent additional message: {Fore.YELLOW}{additional_message}{Style.RESET_ALL}")
+            # additional_message = "Server received your message!"
+            # await websocket.send(additional_message)
+            # print(f"Sent additional message: {Fore.YELLOW}{additional_message}{Style.RESET_ALL}")
             
             # Receive another message from the client
             second_message = await websocket.recv()
