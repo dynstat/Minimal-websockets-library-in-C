@@ -2,7 +2,7 @@
 import asyncio
 # Import the websockets library, which implements the WebSocket protocol
 import websockets
-
+break_loop = False
 # Import colorama for colored terminal output
 from colorama import Fore, Style, init
 
@@ -14,7 +14,7 @@ init(autoreset=True)
 async def echo(websocket: websockets.WebSocketServerProtocol):
     print(f"New connection: with address {websocket.remote_address} and port {websocket.port}")
     try:
-        while True:
+        while not break_loop:
             # Receive a message from the client
             message = await websocket.recv()
             if message is None:
@@ -51,10 +51,11 @@ async def echo(websocket: websockets.WebSocketServerProtocol):
     except websockets.exceptions.ConnectionClosedError as e:
         # If the connection is closed unexpectedly, this exception is caught
         # We simply pass, effectively closing the connection gracefully
-        print(f"\nConnection closed reason: CLIENT DISCONNECTED\n\n")
+        print(f"\nConnection closed reason: CLIENT DISCONNECTED: {e}\n\n")
 
 # Define an asynchronous function named 'main' that sets up the server
 async def main():
+    global break_loop
     # Create a WebSocket server using the 'serve' function from the websockets library
     # It will use the 'echo' function to handle connections, listen on 'localhost' at port 8765
     server = await websockets.serve(echo, "localhost", 8765)
@@ -64,6 +65,7 @@ async def main():
         await server.wait_closed()
     except asyncio.CancelledError:
         print("Server is shutting down...")
+        break_loop = True
     finally:
         server.close()
         await server.wait_closed()
