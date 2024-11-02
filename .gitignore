@@ -1,3 +1,4 @@
 *.obj
 *.vs
 x64
+test-async.py
