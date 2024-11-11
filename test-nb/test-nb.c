@@ -23,7 +23,7 @@
 
 // Configuration
 #define SERVER_HOST "localhost"
-#define SERVER_PORT 8765
+#define SERVER_PORT 8766
 #define RECONNECT_INTERVAL 2000  // 2 seconds
 #define MAX_BUFFER_SIZE 1024000  // 1MB
 

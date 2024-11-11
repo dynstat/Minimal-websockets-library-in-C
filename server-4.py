@@ -85,7 +85,7 @@ async def main():
     server = await websockets.serve(
         handle_client,
         "localhost",
-        8765,
+        8766,
         max_size=None  # Allow unlimited message size
     )
     
