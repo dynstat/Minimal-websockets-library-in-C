@@ -742,9 +742,18 @@ int ws_check_server_available(const char* host, int port) {
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%d", port);
 
-    if (getaddrinfo(host, port_str, &hints, &result) != 0) {
-        logToFile2("MWS: Failed to get address info\n");
-        freeaddrinfo(result); 
+    // Attempt to resolve the host name and port to an IP address using getaddrinfo()
+    // host: The hostname to resolve (e.g. "localhost", "example.com")
+    // port_str: The port number as a string
+    // hints: Contains criteria for selecting the socket address structures
+    // result: Will contain the resulting address information
+    // Returns 0 on success, non-zero on failure
+    int gai_result = getaddrinfo(host, port_str, &hints, &result);
+    if (gai_result != 0) {
+        char errMsg[256];
+        snprintf(errMsg, sizeof(errMsg), "MWS: Failed to get address info: %s (Error: %d)\n", 
+                gai_strerror(gai_result), gai_result);
+        logToFile2(errMsg);
         return 0;
     }
 
