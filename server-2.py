@@ -11,8 +11,9 @@ init(autoreset=True)
 
 # Define an asynchronous function named 'echo' that handles WebSocket connections
 # The 'async' keyword indicates that this function can be paused and resumed
-async def echo(websocket: websockets.WebSocketServerProtocol):
-    print(f"New connection: with address {websocket.remote_address} and port {websocket.port}")
+async def echo(websocket):
+    # print(f"New connection: with address {websocket.remote_address} and port {websocket.port}")
+    print(f"New connection")
     try:
         while not break_loop:
             # Receive a message from the client
@@ -58,7 +59,8 @@ async def main():
     global break_loop
     # Create a WebSocket server using the 'serve' function from the websockets library
     # It will use the 'echo' function to handle connections, listen on 'localhost' at port 8765
-    server = await websockets.serve(echo, "localhost", 8766)
+    async with serve(echo, "localhost", 8766) as server:
+        await server.serve_forever()
     print("Server started. Press Ctrl+C to stop.")
     try:
         # Wait for the server to close
@@ -73,6 +75,7 @@ async def main():
 
 # Run the 'main' function using the 'run' function from the asyncio library
 # This is a blocking call that runs the 'main' function and waits for it to complete
+from websockets.asyncio.server import serve
 if __name__ == "__main__":
     try:
         asyncio.run(main())
