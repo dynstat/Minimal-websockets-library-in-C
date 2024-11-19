@@ -525,28 +525,155 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
     return total_received;
 }
 
-// Close WebSocket connection
+// Modified ws_close function with proper closing handshake
 int ws_close(ws_ctx* ctx) {
-    logToFile2("MWS: Closing WebSocket connection...\n");
+    logToFile2("MWS: Initiating WebSocket closing handshake...\n");
 
-    if (ctx->state == WS_STATE_OPEN) {
-        // Send close frame with status code 1000 (normal closure)
-        uint8_t close_frame[] = { 0x88, 0x02, 0x03, 0xE8 };
-        send(ctx->socket, (char*)close_frame, sizeof(close_frame), 0);
-        
-        // Set shorter timeout for waiting close response
-        DWORD timeout = 5000; // 5 seconds
-        setsockopt(ctx->socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
-        
-        // Wait for close frame response
-        char buffer[1024];
-        recv(ctx->socket, buffer, sizeof(buffer), 0);
-        
-        ctx->state = WS_STATE_CLOSED;
-        closesocket(ctx->socket);
-        logToFile2("MWS: WebSocket connection closed properly\n");
+    if (!ctx || ctx->socket == INVALID_SOCKET) {
+        logToFile2("MWS: Invalid context or socket in ws_close\n");
+        return -1;
     }
 
+    // Only proceed with closing handshake if we're in OPEN state
+    if (ctx->state == WS_STATE_OPEN) {
+        // Create close frame with status code 1000 (normal closure)
+        uint8_t close_frame[6];  // 2 bytes header + 2 bytes status code + 2 bytes mask
+        close_frame[0] = 0x88;   // FIN bit set (0x80) + Close opcode (0x08)
+        close_frame[1] = 0x82;   // Masked bit set (0x80) + payload length 2
+
+        // Generate random mask
+        uint32_t mask = generate_mask();
+        memcpy(close_frame + 2, &mask, 4);
+        
+        // Status code 1000 (normal closure)
+        uint16_t status_code = htons(1000);
+        uint8_t payload[2];
+        memcpy(payload, &status_code, 2);
+        
+        // Apply mask to status code
+        payload[0] ^= ((uint8_t*)&mask)[0];
+        payload[1] ^= ((uint8_t*)&mask)[1];
+
+        // Send close frame
+        if (send(ctx->socket, (char*)close_frame, 6, 0) != 6 ||
+            send(ctx->socket, (char*)payload, 2, 0) != 2) {
+            logToFile2("MWS: Failed to send close frame\n");
+            goto force_close;
+        }
+
+        ctx->state = WS_STATE_CLOSING;
+        logToFile2("MWS: Close frame sent, waiting for server close frame...\n");
+
+        // Set socket timeout for receiving close frame
+        DWORD timeout = 5000; // 5 seconds
+        setsockopt(ctx->socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+
+        // Wait for close frame from server
+        char response[32];
+        int received = recv(ctx->socket, response, sizeof(response), 0);
+
+        if (received > 0 && (response[0] & 0x0F) == 0x08) {
+            logToFile2("MWS: Received close frame from server\n");
+            
+            // Extract status code if present
+            if (received >= 4) {
+                uint16_t received_code;
+                memcpy(&received_code, &response[2], 2);
+                received_code = ntohs(received_code);
+                char logMsg[100];
+                snprintf(logMsg, sizeof(logMsg), "MWS: Server close frame status code: %d\n", received_code);
+                logToFile2(logMsg);
+            }
+        }
+
+        // Perform orderly shutdown as specified in RFC 6455
+        if (shutdown(ctx->socket, SD_SEND) == 0) {
+            // Wait for server to close its end (maximum 3 seconds)
+            char buffer[1024];
+            fd_set readfds;
+            struct timeval tv = {3, 0}; // 3 seconds timeout
+
+            FD_ZERO(&readfds);
+            FD_SET(ctx->socket, &readfds);
+
+            // Wait for any remaining data from server before closing
+            // select() monitors socket for readability with 3 sec timeout set in tv
+            // Returns >0 if socket is readable, 0 on timeout, -1 on error
+            while (select(ctx->socket + 1, &readfds, NULL, NULL, &tv) > 0) {
+                // Try to receive any remaining data
+                // Break if recv() returns 0 (connection closed) or negative (error)
+                if (recv(ctx->socket, buffer, sizeof(buffer), 0) <= 0) {
+                    break;
+                }
+                // Will continue reading until no more data or error
+            }
+        }
+    }
+
+force_close:
+    // Close the socket
+    closesocket(ctx->socket);
+    ctx->socket = INVALID_SOCKET;
+    ctx->state = WS_STATE_CLOSED;
+    
+    logToFile2("MWS: WebSocket connection closed\n");
+    return 0;
+}
+
+// Add new function to handle abnormal closures
+int ws_fail_connection(ws_ctx* ctx, uint16_t status_code, const char* reason) {
+    logToFile2("MWS: Failing WebSocket connection...\n");
+
+    if (!ctx) {
+        return -1;
+    }
+
+    // Send close frame with status code if connection is still open
+    if (ctx->state == WS_STATE_OPEN) {
+        size_t reason_len = reason ? strlen(reason) : 0;
+        size_t payload_len = 2 + reason_len; // 2 bytes for status code + reason string
+        
+        uint8_t* close_frame = (uint8_t*)malloc(6 + payload_len);
+        if (!close_frame) {
+            logToFile2("MWS: Memory allocation failed for close frame\n");
+            goto force_close;
+        }
+
+        // Construct close frame
+        close_frame[0] = 0x88;  // FIN + Close opcode
+        close_frame[1] = 0x80 | payload_len;  // Masked + payload length
+        
+        // Generate and add mask
+        uint32_t mask = generate_mask();
+        memcpy(close_frame + 2, &mask, 4);
+
+        // Add status code
+        uint16_t net_code = htons(status_code);
+        uint8_t* payload = close_frame + 6;
+        memcpy(payload, &net_code, 2);
+
+        // Add reason if present
+        if (reason_len > 0) {
+            memcpy(payload + 2, reason, reason_len);
+        }
+
+        // Apply mask to payload
+        for (size_t i = 0; i < payload_len; i++) {
+            payload[i] ^= ((uint8_t*)&mask)[i % 4];
+        }
+
+        // Send close frame
+        send(ctx->socket, (char*)close_frame, 6 + payload_len, 0);
+        free(close_frame);
+    }
+
+force_close:
+    // Close socket immediately
+    closesocket(ctx->socket);
+    ctx->socket = INVALID_SOCKET;
+    ctx->state = WS_STATE_CLOSED;
+
+    logToFile2("MWS: WebSocket connection failed and closed\n");
     return 0;
 }
 
