@@ -39,6 +39,7 @@ async def echo(websocket):
                 break
             print(f"Received second message: {Fore.GREEN}{second_message}{Style.RESET_ALL}")
             
+            await asyncio.sleep(10)
             # Send a large data response
             large_data = "A" * 905000  # 1 million 'A' characters
             await websocket.send(large_data)
@@ -59,7 +60,7 @@ async def main():
     global break_loop
     # Create a WebSocket server using the 'serve' function from the websockets library
     # It will use the 'echo' function to handle connections, listen on 'localhost' at port 8765
-    async with serve(echo, "localhost", 8766) as server:
+    async with serve(echo, "localhost", 8766, ping_interval=None, ping_timeout=None) as server:
         await server.serve_forever()
     print("Server started. Press Ctrl+C to stop.")
     try:
