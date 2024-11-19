@@ -185,7 +185,7 @@ async def main():
     global break_loop
     # Create a WebSocket server using the 'serve' function from the websockets library
     # It will use the 'echo' function to handle connections, listen on 'localhost' at port 8765
-    server = await websockets.serve(echo, "localhost", 8765)
+    server = await websockets.serve(echo, "localhost", 8766)
     print("Server started. Press Ctrl+C to stop.")
     try:
         # Wait for the server to close

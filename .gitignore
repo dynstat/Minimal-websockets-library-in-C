@@ -2,3 +2,4 @@
 *.vs
 x64
 test-async.py
+*.ipynb
