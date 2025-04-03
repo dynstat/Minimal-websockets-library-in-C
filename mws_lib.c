@@ -23,14 +23,17 @@
 #define PING_TIMEOUT_MS 30000  // 30 seconds
 #define PONG_TIMEOUT_MS 10000  // 10 seconds
 
-// // WebSocket context structure
-// struct ws_ctx {
-//     SOCKET socket;        // Socket handle for the WebSocket connection
-//     ws_state state;       // Current state of the WebSocket connection
-//     char* recv_buffer;    // Buffer to store received data
-//     size_t recv_buffer_size;  // Total size of the receive buffer
-//     size_t recv_buffer_len;   // Current length of data in the receive buffer
-// };
+// If ntohll is not already defined, define it here.
+// On Windows, _byteswap_uint64() is used; on other platforms, be64toh() is assumed.
+#ifndef ntohll
+#ifdef _WIN32
+#include <stdlib.h>
+#define ntohll(x) _byteswap_uint64(x)
+#else
+#include <endian.h>
+#define ntohll(x) be64toh(x)
+#endif
+#endif
 
 // Base64 encoding table
 static const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
