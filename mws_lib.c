@@ -11,10 +11,10 @@
 #include "mws_lib.h"
 #include "Logger2.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
+// #define WIN32_LEAN_AND_MEAN
+// #include <windows.h>
+// #include <winsock2.h>
+// #include <ws2tcpip.h>
 
 // Link with Ws2_32.lib for Windows sockets.
 #pragma comment(lib, "Ws2_32.lib")
@@ -103,9 +103,7 @@ static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
     char request[1024];
     int request_len;
 
-    // Generate a random key
-    logToFile2("MWS: Generating random key...\n");
-    srand((unsigned int)time(NULL));
+    // Assume srand() is called once in main.
     for (int i = 0; i < 16; i++) {
         key[i] = rand() % 256;
     }
@@ -115,8 +113,7 @@ static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
     free(base64_key);
     logToFile2("MWS: Random key generated and encoded.\n");
 
-    // Construct handshake HTTP request
-    logToFile2("MWS: Constructing handshake request...\n");
+    // Construct handshake HTTP request ensuring it is fully CRLF terminated.
     request_len = snprintf(request, sizeof(request),
         "GET %s HTTP/1.1\r\n"
         "Host: %s\r\n"
@@ -128,11 +125,15 @@ static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
         path, host, encoded_key);
     logToFile2("MWS: Handshake request constructed.\n");
 
-    // Send the handshake claim over the socket
-    logToFile2("MWS: Sending handshake request...\n");
-    if (send(ctx->socket, request, request_len, 0) != request_len) {
-        logToFile2("MWS: Failed to send handshake request.\n");
-        return -1;
+    int total_sent = 0;
+    // Loop to guarantee all bytes are sent properly
+    while (total_sent < request_len) {
+        int sent = send(ctx->socket, request + total_sent, request_len - total_sent, 0);
+        if (sent <= 0) {
+            logToFile2("MWS: Failed to send the complete handshake request.\n");
+            return -1;
+        }
+        total_sent += sent;
     }
     logToFile2("MWS: Handshake request sent successfully.\n");
     return 0;
@@ -146,29 +147,39 @@ static int ws_send_handshake(ws_ctx* ctx, const char* host, const char* path) {
 //------------------------------------------------------------------------------
 static int ws_parse_handshake_response(ws_ctx* ctx) {
     logToFile2("MWS: Parsing WebSocket handshake response...\n");
-    char buffer[1024];
-    int bytes_received = recv(ctx->socket, buffer, sizeof(buffer) - 1, 0);
-    if (bytes_received <= 0) {
-        logToFile2("MWS: Failed to receive handshake response.\n");
-        return -1;
+    char buffer[2048];
+    int total_received = 0;
+    int bytes_received = 0;
+    
+    // Keep reading one byte at a time until the header terminator "\r\n\r\n" is found,
+    // or until the buffer is almost full.
+    while (total_received < (int)sizeof(buffer) - 1) {
+        bytes_received = recv(ctx->socket, buffer + total_received, 1, 0);
+        if (bytes_received <= 0) {
+            logToFile2("MWS: Failed to receive handshake response\n");
+            return -1;
+        }
+        total_received += bytes_received;
+        buffer[total_received] = '\0';
+        
+        // Check if we have reached the end of the headers.
+        if (strstr(buffer, "\r\n\r\n") != NULL) {
+            break;
+        }
     }
-    buffer[bytes_received] = '\0';
+    
     logToFile2("MWS: Received handshake response.\n");
-
+    
+    // Validate that the handshake response is correct.
     if (strstr(buffer, "HTTP/1.1 101") == NULL) {
         logToFile2("MWS: Invalid handshake response: HTTP/1.1 101 not found.\n");
         return -1;
     }
-    logToFile2("MWS: HTTP/1.1 101 status found in response.\n");
-
     if (strstr(buffer, "Upgrade: websocket") == NULL) {
         logToFile2("MWS: Invalid handshake response: Upgrade: websocket not found.\n");
         return -1;
     }
-    logToFile2("MWS: Upgrade: websocket found in response.\n");
-
-    // Optionally, verify Sec-WebSocket-Accept here
-
+    
     ctx->state = WS_STATE_OPEN;
     logToFile2("MWS: WebSocket connection established successfully.\n");
     return 0;
@@ -291,6 +302,10 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
             return -1;
         }
         port = strcmp(schema, "wss") == 0 ? 443 : 80;
+    }
+
+    if (strlen(path) == 0) {
+        strcpy_s(path, sizeof(path), "/"); // Default path to '/'
     }
 
     struct addrinfo hints, *addr_info;
@@ -957,60 +972,4 @@ int ws_check_connection(ws_ctx* ctx) {
         }
     }
     return 1;
-}
-
-//------------------------------------------------------------------------------
-// Connection monitor thread function.
-//
-// This thread periodically calls ws_check_connection() to detect if the
-// connection has dropped; if so, it closes the connection.
-//------------------------------------------------------------------------------
-DWORD WINAPI ConnectionMonitorThread(LPVOID lpParam) {
-    ws_ctx* ctx = (ws_ctx*)lpParam;
-    if (ctx == NULL) {
-        logToFile2("MWS: ConnectionMonitorThread received NULL context.\n");
-        return 1;
-    }
-    while (ws_get_state(ctx) != WS_STATE_CLOSED) {
-        int is_alive = ws_check_connection(ctx);
-        if (!is_alive) {
-            logToFile2("MWS: Disconnected detected by ConnectionMonitorThread.\n");
-            ws_close(ctx);
-            break;
-        }
-        Sleep(5000); // Check every 5 seconds.
-    }
-    logToFile2("MWS: ConnectionMonitorThread exiting.\n");
-    return 0;
-}
-
-//------------------------------------------------------------------------------
-// Function: ws_start_connection_monitor
-//
-// Starts a new thread to monitor connection status regularly.
-//------------------------------------------------------------------------------
-int ws_start_connection_monitor(ws_ctx* ctx) {
-    if (ctx == NULL) {
-        logToFile2("MWS: ws_start_connection_monitor received NULL context.\n");
-        return -1;
-    }
-
-    HANDLE thread = CreateThread(
-        NULL,                    // Default security attributes.
-        0,                       // Default stack size.
-        ConnectionMonitorThread, // Thread function.
-        ctx,                     // Parameter to thread function.
-        0,                       // Default creation flags.
-        NULL                     // Thread identifier (not used).
-    );
-    if (thread == NULL) {
-        int error = GetLastError();
-        char errMsg[256];
-        snprintf(errMsg, sizeof(errMsg), "Failed to create connection monitor thread. Error: %d\n", error);
-        logToFile2(errMsg);
-        return -1;
-    }
-    CloseHandle(thread);
-    logToFile2("MWS: Connection monitor thread started successfully.\n");
-    return 0;
 }

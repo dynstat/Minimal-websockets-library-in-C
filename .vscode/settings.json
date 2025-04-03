@@ -59,6 +59,7 @@
   "files.associations": {
     "logger2.h": "c",
     "mws_lib.h": "c",
-    "stdint.h": "c"
+    "stdint.h": "c",
+    "winsock2.h": "c"
   }
 }
