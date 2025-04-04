@@ -48,66 +48,97 @@ int main(void) {
     printf("ws_client: Starting WebSocket client...\n");
 
     while (1) {
-        // Check if the server is available on localhost at port 8765.
-        if (ws_check_server_available("localhost", 8765)) {
-            printf("ws_client: Server is available! Attempting to connect...\n");
-
-            // Create a new WebSocket context.
-            ws_ctx* ctx = ws_create_ctx();
-            if (ctx == NULL) {
-                printf("ws_client: Failed to allocate WebSocket context. Retrying...\n");
-                Sleep(2000); // Wait 2 seconds before retrying.
-                continue;
-            }
-
-            // Attempt to connect using the WebSocket URI.
-            if (ws_connect(ctx, "ws://localhost:8765/") != 0) {
-                printf("ws_client: Failed to connect to the server.\n");
-                ws_destroy_ctx(ctx);
-                Sleep(2000);
-                continue;
-            }
-            printf("ws_client: Connected to WebSocket server at ws://localhost:8765/!\n");
-
-            // Communication loop: as long as the connection remains open.
-            time_t lastMsgTime = time(NULL);
-            while (ws_get_state(ctx) == WS_STATE_OPEN) {
-                // Process control frames (like PING, PONG, and CLOSE).
-                ws_service(ctx);
-
-                // Check for any incoming application data.
-                char recvBuffer[1024];
-                int bytesReceived = ws_recv(ctx, recvBuffer, sizeof(recvBuffer) - 1);
-                if (bytesReceived > 0) {
-                    // Null-terminate and print the received data.
-                    recvBuffer[bytesReceived] = '\0';
-                    printf("ws_client: Received: %s\n", recvBuffer);
-                }
-
-                // Every 10 seconds, send a test message.
-                time_t currentTime = time(NULL);
-                if (currentTime - lastMsgTime >= 10) {
-                    const char* testMsg = "Hello from WebSocket client!";
-                    if (ws_send(ctx, testMsg, strlen(testMsg), WS_OPCODE_TEXT) == 0) {
-                        printf("ws_client: Sent: %s\n", testMsg);
-                    } else {
-                        printf("ws_client: Failed to send test message.\n");
-                    }
-                    lastMsgTime = currentTime;
-                }
-
-                // Sleep briefly (100 ms) so as to yield CPU time.
-                Sleep(100);
-            }
-
-            // When the connection is no longer open, clean up the WebSocket context.
-            printf("ws_client: Disconnected from server. Cleaning up context.\n");
-            ws_destroy_ctx(ctx);
-        } else {
-            printf("ws_client: Server not available. Checking again in 2 seconds.\n");
+        // Implement exponential backoff for server availability checks
+        int retryDelay = 2000; // Start with 2 seconds
+        while (!ws_check_server_available("localhost", 8765)) {
+            printf("ws_client: Server not available. Retrying in %d ms...\n", retryDelay);
+            Sleep(retryDelay);
+            retryDelay = min(retryDelay * 2, 30000); // Exponential backoff, capped at 30 seconds
         }
-        // Wait 2 seconds before checking again.
-        Sleep(2000);
+        
+        printf("ws_client: Server is available! Attempting to connect...\n");
+
+        // Create a new WebSocket context.
+        ws_ctx* ctx = ws_create_ctx();
+        if (ctx == NULL) {
+            printf("ws_client: Failed to allocate WebSocket context. Retrying...\n");
+            Sleep(2000); // Wait 2 seconds before retrying.
+            continue;
+        }
+
+        // Implement exponential backoff for connection attempts
+        retryDelay = 2000; // Reset retry delay
+        int connectAttempts = 0;
+        int maxConnectAttempts = 5; // Maximum number of connection attempts before giving up
+        
+        while (connectAttempts < maxConnectAttempts) {
+            if (ws_connect(ctx, "ws://localhost:8765/") == 0) {
+                break; // Successfully connected
+            }
+            
+            printf("ws_client: Failed to connect to the server. Attempt %d of %d. Retrying in %d ms...\n", 
+                   connectAttempts + 1, maxConnectAttempts, retryDelay);
+            Sleep(retryDelay);
+            retryDelay = min(retryDelay * 2, 30000); // Exponential backoff, capped at 30 seconds
+            connectAttempts++;
+        }
+        
+        if (connectAttempts >= maxConnectAttempts) {
+            printf("ws_client: Failed to connect after %d attempts. Restarting connection process.\n", maxConnectAttempts);
+            ws_destroy_ctx(ctx);
+            continue;
+        }
+        
+        printf("ws_client: Connected to WebSocket server at ws://localhost:8765/!\n");
+
+        // Communication loop: as long as the connection remains open.
+        time_t lastMsgTime = time(NULL);
+        while (ws_get_state(ctx) == WS_STATE_OPEN) {
+            // Process control frames (like PING, PONG, and CLOSE).
+            if (ws_service(ctx) != 0 || !ws_check_connection(ctx)) {
+                printf("ws_client: Connection issue detected during service.\n");
+                break;
+            }
+
+            // Check for any incoming application data.
+            char recvBuffer[1024];
+            int bytesReceived = ws_recv(ctx, recvBuffer, sizeof(recvBuffer) - 1);
+            if (bytesReceived > 0) {
+                // Null-terminate and print the received data.
+                recvBuffer[bytesReceived] = '\0';
+                printf("ws_client: Received: %s\n", recvBuffer);
+            } else if (bytesReceived < 0 && ws_get_state(ctx) == WS_STATE_OPEN) {
+                // Only log errors if we're still supposed to be connected
+                printf("ws_client: Error receiving data.\n");
+            }
+
+            // Every 10 seconds, send a test message.
+            time_t currentTime = time(NULL);
+            if (currentTime - lastMsgTime >= 10) {
+                const char* testMsg = "Hello from WebSocket client!";
+                if (ws_send(ctx, testMsg, strlen(testMsg), WS_OPCODE_TEXT) == 0) {
+                    printf("ws_client: Sent: %s\n", testMsg);
+                } else {
+                    printf("ws_client: Failed to send test message.\n");
+                    break; // Exit the loop if sending fails
+                }
+                lastMsgTime = currentTime;
+            }
+
+            // Sleep briefly (100 ms) so as to yield CPU time.
+            Sleep(100);
+        }
+
+        // Implement graceful closing
+        printf("ws_client: Connection ending. Sending close frame...\n");
+        ws_close(ctx); // Send a proper close frame
+        Sleep(500);    // Give time for the close handshake to complete
+        
+        printf("ws_client: Disconnected from server. Cleaning up context.\n");
+        ws_destroy_ctx(ctx);
+        
+        // Wait a moment before attempting to reconnect
+        Sleep(1000);
     }
 
     // Cleanup Winsock resources (although this point will likely never be reached).

@@ -151,8 +151,8 @@ static int ws_parse_handshake_response(ws_ctx* ctx) {
     int total_received = 0;
     int bytes_received = 0;
     
-    // Keep reading one byte at a time until the header terminator "\r\n\r\n" is found,
-    // or until the buffer is almost full.
+    // Read data one byte at a time until the header terminator "\r\n\r\n" is found 
+    // (or until the buffer is nearly full)
     while (total_received < (int)sizeof(buffer) - 1) {
         bytes_received = recv(ctx->socket, buffer + total_received, 1, 0);
         if (bytes_received <= 0) {
@@ -162,7 +162,7 @@ static int ws_parse_handshake_response(ws_ctx* ctx) {
         total_received += bytes_received;
         buffer[total_received] = '\0';
         
-        // Check if we have reached the end of the headers.
+        // Check for end-of-headers (CRLF CRLF)
         if (strstr(buffer, "\r\n\r\n") != NULL) {
             break;
         }
@@ -170,13 +170,17 @@ static int ws_parse_handshake_response(ws_ctx* ctx) {
     
     logToFile2("MWS: Received handshake response.\n");
     
-    // Validate that the handshake response is correct.
+    // Validate the handshake response:
     if (strstr(buffer, "HTTP/1.1 101") == NULL) {
         logToFile2("MWS: Invalid handshake response: HTTP/1.1 101 not found.\n");
         return -1;
     }
     if (strstr(buffer, "Upgrade: websocket") == NULL) {
         logToFile2("MWS: Invalid handshake response: Upgrade: websocket not found.\n");
+        return -1;
+    }
+    if (strstr(buffer, "Sec-WebSocket-Accept:") == NULL) {
+        logToFile2("MWS: Invalid handshake response: Sec-WebSocket-Accept header not found.\n");
         return -1;
     }
     
@@ -294,8 +298,10 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
     logToFile2("MWS: Attempting to connect to WebSocket server\n");
     char schema[10], host[256], path[256];
     int port;
+    // Try parsing URI with an explicit port first.
     if (sscanf_s(uri, "%9[^:]://%255[^:/]:%d%255s", schema, (unsigned)sizeof(schema),
                  host, (unsigned)sizeof(host), &port, path, (unsigned)sizeof(path)) < 3) {
+        // If no explicit port is provided, try without the port and assign default values.
         if (sscanf_s(uri, "%9[^:]://%255[^/]%255s", schema, (unsigned)sizeof(schema),
                      host, (unsigned)sizeof(host), path, (unsigned)sizeof(path)) < 3) {
             logToFile2("MWS: Failed to parse URI\n");
@@ -303,19 +309,28 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
         }
         port = strcmp(schema, "wss") == 0 ? 443 : 80;
     }
-
+    
+    // If path is empty, default to '/'
     if (strlen(path) == 0) {
         strcpy_s(path, sizeof(path), "/"); // Default path to '/'
     }
-
+    
+    // Log the parsed URI values for debugging.
+    {
+        char logMsg[512];
+        snprintf(logMsg, sizeof(logMsg), "Parsed URI: schema=%s, host=%s, port=%d, path=%s\n",
+                 schema, host, port, path);
+        logToFile2((const char *)logMsg);
+    }
+    
     struct addrinfo hints, *addr_info;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
-
+    
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%d", port);
-
+    
     int gai_result = getaddrinfo(host, port_str, &hints, &addr_info);
     if (gai_result != 0) {
         char errMsg[256];
@@ -323,10 +338,10 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
         logToFile2(errMsg);
         return -1;
     }
-
+    
     struct addrinfo *ptr;
     int connect_result = -1;
-    for(ptr = addr_info; ptr != NULL; ptr = ptr->ai_next) {
+    for (ptr = addr_info; ptr != NULL; ptr = ptr->ai_next) {
         ctx->socket = socket(ptr->ai_family, ptr->ai_socktype, ptr->ai_protocol);
         if (ctx->socket == INVALID_SOCKET) {
             continue;
@@ -338,13 +353,13 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
         closesocket(ctx->socket);
         ctx->socket = INVALID_SOCKET;
     }
-
+    
     freeaddrinfo(addr_info);
-
+    
     if (connect_result != 0) {
         return -1;
     }
-
+    
     ctx->state = WS_STATE_CONNECTING;
     if (ws_send_handshake(ctx, host, path) != 0) {
         logToFile2("MWS: Failed to send WebSocket handshake\n");
