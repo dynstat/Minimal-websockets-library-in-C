@@ -2,9 +2,8 @@
  * ws_client.c
  *
  * A sample WebSocket client that uses the mws_lib library for client-side
- * WebSocket operations. This client checks every 2 seconds whether a server
- * is available at localhost on port 8765. Once available, it connects using
- * the URI "ws://localhost:8765/" and enters a communication loop.
+ * WebSocket operations. This client uses a separate thread to check server
+ * availability and connects using the URI "ws://localhost:8765/" when available.
  *
  * The communication loop does the following:
  *   - Calls ws_service() periodically to handle WebSocket control frames
@@ -24,21 +23,92 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <process.h>  // For _beginthreadex
 
 // Then include standard C headers
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdbool.h>
 
 // Finally include your custom headers
 #include "mws_lib.h"
 // Link with Ws2_32.lib
 //#pragma comment(lib, "Ws2_32.lib")
 
+// Thread synchronization objects
+HANDLE serverCheckThread = NULL;
+CRITICAL_SECTION stateLock;
+CONDITION_VARIABLE serverAvailableCV;
+CONDITION_VARIABLE clientConnectedCV;
+
+// Shared state variables
+volatile bool serverAvailable = false;
+volatile bool clientConnected = false;
+volatile bool terminateThread = false;
+
+// Server check thread function
+unsigned __stdcall serverCheckThreadFunc(void* arg) {
+    const char* host = "localhost";
+    int port = 8765;
+    int retryDelay = 2000; // Start with 2 seconds
+
+    while (!terminateThread) {
+        // Check if client is connected - if so, wait until disconnected
+        EnterCriticalSection(&stateLock);
+        while (clientConnected && !terminateThread) {
+            // Client is connected, wait for it to disconnect
+            SleepConditionVariableCS(&clientConnectedCV, &stateLock, INFINITE);
+        }
+        
+        // Reset server availability flag when starting to check
+        serverAvailable = false;
+        LeaveCriticalSection(&stateLock);
+        
+        if (terminateThread) break;
+        
+        // Check server availability with exponential backoff
+        while (!terminateThread) {
+            if (ws_check_server_available(host, port)) {
+                // Server is available
+                EnterCriticalSection(&stateLock);
+                serverAvailable = true;
+                LeaveCriticalSection(&stateLock);
+                
+                // Signal main thread that server is available
+                WakeConditionVariable(&serverAvailableCV);
+                
+                printf("Server check thread: Server is available!\n");
+                break;
+            }
+            
+            printf("Server check thread: Server not available. Retrying in %d ms...\n", retryDelay);
+            Sleep(retryDelay);
+            retryDelay = min(retryDelay * 2, 30000); // Exponential backoff, capped at 30 seconds
+        }
+        
+        // Wait for client to connect or for thread termination
+        EnterCriticalSection(&stateLock);
+        while (serverAvailable && !clientConnected && !terminateThread) {
+            // Server is available but client not yet connected
+            SleepConditionVariableCS(&serverAvailableCV, &stateLock, INFINITE);
+        }
+        LeaveCriticalSection(&stateLock);
+    }
+    
+    printf("Server check thread: Terminating\n");
+    return 0;
+}
+
 int main(void) {
-    // Seed the random generator once.
+    // Seed the random generator once
     srand((unsigned int)time(NULL));
+
+    // Initialize synchronization objects
+    InitializeCriticalSection(&stateLock);
+    InitializeConditionVariable(&serverAvailableCV);
+    InitializeConditionVariable(&clientConnectedCV);
 
     // Initialize Winsock. If this fails, exit.
     if (ws_init() != 0) {
@@ -47,33 +117,53 @@ int main(void) {
     }
     printf("ws_client: Starting WebSocket client...\n");
 
+    // Start server check thread
+    serverCheckThread = (HANDLE)_beginthreadex(NULL, 0, serverCheckThreadFunc, NULL, 0, NULL);
+    if (serverCheckThread == NULL) {
+        fprintf(stderr, "ws_client: Failed to create server check thread.\n");
+        ws_cleanup();
+        return 1;
+    }
+
     while (1) {
-        // Implement exponential backoff for server availability checks
-        int retryDelay = 2000; // Start with 2 seconds
-        while (!ws_check_server_available("localhost", 8765)) {
-            printf("ws_client: Server not available. Retrying in %d ms...\n", retryDelay);
-            Sleep(retryDelay);
-            retryDelay = min(retryDelay * 2, 30000); // Exponential backoff, capped at 30 seconds
+        // Wait for server to become available
+        EnterCriticalSection(&stateLock);
+        while (!serverAvailable && !terminateThread) {
+            printf("ws_client: Waiting for server to become available...\n");
+            SleepConditionVariableCS(&serverAvailableCV, &stateLock, INFINITE);
         }
+        LeaveCriticalSection(&stateLock);
+        
+        if (terminateThread) break;
         
         printf("ws_client: Server is available! Attempting to connect...\n");
 
-        // Create a new WebSocket context.
+        // Create a new WebSocket context
         ws_ctx* ctx = ws_create_ctx();
         if (ctx == NULL) {
             printf("ws_client: Failed to allocate WebSocket context. Retrying...\n");
-            Sleep(2000); // Wait 2 seconds before retrying.
+            Sleep(2000);
             continue;
         }
 
         // Implement exponential backoff for connection attempts
-        retryDelay = 2000; // Reset retry delay
+        int retryDelay = 2000; // Reset retry delay
         int connectAttempts = 0;
         int maxConnectAttempts = 5; // Maximum number of connection attempts before giving up
+        bool connected = false;
         
-        while (connectAttempts < maxConnectAttempts) {
+        while (connectAttempts < maxConnectAttempts && !connected) {
             if (ws_connect(ctx, "ws://localhost:8765/") == 0) {
-                break; // Successfully connected
+                connected = true;
+                
+                // Update connection state
+                EnterCriticalSection(&stateLock);
+                clientConnected = true;
+                LeaveCriticalSection(&stateLock);
+                
+                // Signal server check thread that client is connected
+                WakeConditionVariable(&clientConnectedCV);
+                break;
             }
             
             printf("ws_client: Failed to connect to the server. Attempt %d of %d. Retrying in %d ms...\n", 
@@ -83,28 +173,36 @@ int main(void) {
             connectAttempts++;
         }
         
-        if (connectAttempts >= maxConnectAttempts) {
+        if (!connected) {
             printf("ws_client: Failed to connect after %d attempts. Restarting connection process.\n", maxConnectAttempts);
             ws_destroy_ctx(ctx);
+            
+            // Reset server availability to trigger rechecking
+            EnterCriticalSection(&stateLock);
+            serverAvailable = false;
+            LeaveCriticalSection(&stateLock);
+            
+            // Signal server check thread to resume checking
+            WakeConditionVariable(&serverAvailableCV);
             continue;
         }
         
         printf("ws_client: Connected to WebSocket server at ws://localhost:8765/!\n");
 
-        // Communication loop: as long as the connection remains open.
+        // Communication loop: as long as the connection remains open
         time_t lastMsgTime = time(NULL);
         while (ws_get_state(ctx) == WS_STATE_OPEN) {
-            // Process control frames (like PING, PONG, and CLOSE).
+            // Process control frames (like PING, PONG, and CLOSE)
             if (ws_service(ctx) != 0 || !ws_check_connection(ctx)) {
                 printf("ws_client: Connection issue detected during service.\n");
                 break;
             }
 
-            // Check for any incoming application data.
+            // Check for any incoming application data
             char recvBuffer[1024];
             int bytesReceived = ws_recv(ctx, recvBuffer, sizeof(recvBuffer) - 1);
             if (bytesReceived > 0) {
-                // Null-terminate and print the received data.
+                // Null-terminate and print the received data
                 recvBuffer[bytesReceived] = '\0';
                 printf("ws_client: Received: %s\n", recvBuffer);
             } else if (bytesReceived < 0 && ws_get_state(ctx) == WS_STATE_OPEN) {
@@ -112,7 +210,7 @@ int main(void) {
                 printf("ws_client: Error receiving data.\n");
             }
 
-            // Every 10 seconds, send a test message.
+            // Every 10 seconds, send a test message
             time_t currentTime = time(NULL);
             if (currentTime - lastMsgTime >= 10) {
                 const char* testMsg = "Hello from WebSocket client!";
@@ -125,7 +223,7 @@ int main(void) {
                 lastMsgTime = currentTime;
             }
 
-            // Sleep briefly (100 ms) so as to yield CPU time.
+            // Sleep briefly (100 ms) so as to yield CPU time
             Sleep(100);
         }
 
@@ -137,11 +235,29 @@ int main(void) {
         printf("ws_client: Disconnected from server. Cleaning up context.\n");
         ws_destroy_ctx(ctx);
         
+        // Update connection state
+        EnterCriticalSection(&stateLock);
+        clientConnected = false;
+        LeaveCriticalSection(&stateLock);
+        
+        // Signal server check thread that client is disconnected
+        WakeConditionVariable(&clientConnectedCV);
+        
         // Wait a moment before attempting to reconnect
         Sleep(1000);
     }
 
-    // Cleanup Winsock resources (although this point will likely never be reached).
+    // Signal thread to terminate and wait for it
+    terminateThread = true;
+    WakeConditionVariable(&serverAvailableCV);
+    WakeConditionVariable(&clientConnectedCV);
+    WaitForSingleObject(serverCheckThread, INFINITE);
+    CloseHandle(serverCheckThread);
+    
+    // Cleanup synchronization objects
+    DeleteCriticalSection(&stateLock);
+    
+    // Cleanup Winsock resources
     ws_cleanup();
     return 0;
 }
