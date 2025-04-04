@@ -210,7 +210,10 @@ ws_ctx* ws_create_ctx(void) {
     if (ctx) {
         logToFile2("MWS: WebSocket context allocated successfully.\n");
         memset(ctx, 0, sizeof(ws_ctx));
+        ctx->socket = INVALID_SOCKET;
         ctx->state = WS_STATE_CLOSED;
+        ctx->last_ping_time = time(NULL);
+        ctx->ping_interval = 0;  // Ping/pong disabled by default BUT NOT BEING USED ANYWHERE YET
         ctx->recv_buffer_size = 1024;
         ctx->recv_buffer = (char*)malloc(ctx->recv_buffer_size);
         if (ctx->recv_buffer) {
@@ -830,9 +833,9 @@ int ws_service(ws_ctx* ctx) {
     }
 
     // Send periodic ping frames if the time interval has elapsed.
-    static time_t last_ping_time = 0;
+    ctx->last_ping_time = 0;
     time_t current_time = time(NULL);
-    if (current_time - last_ping_time >= (PING_TIMEOUT_MS / 1000)) {
+    if (current_time - ctx->last_ping_time >= (PING_TIMEOUT_MS / 1000)) {
         uint8_t ping_frame[] = { 0x89, 0x00 };  // 0x89: FIN + PING opcode, 0x00: no payload
         if (send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0) != sizeof(ping_frame)) {
             logToFile2("MWS: Failed to send ping frame\n");
@@ -850,7 +853,7 @@ int ws_service(ws_ctx* ctx) {
             ws_close(ctx);
             return -1;
         }
-        last_ping_time = current_time;
+        ctx->last_ping_time = current_time;
     }
     return 0;
 }
@@ -987,4 +990,40 @@ int ws_check_connection(ws_ctx* ctx) {
         }
     }
     return 1;
+}
+
+//---------- NOT WORKING YET, ctx->ping_interval , ctx->last_ping_time arn't used anywhere ---
+// --------------------------------------------------------------------
+// Function: ws_set_ping_pong
+//
+// Enables or disables automatic ping/pong handling for the WebSocket connection.
+// When enabled (interval > 0), the library will automatically send ping frames
+// at the specified interval and handle pong responses.
+// When disabled (interval = 0), no automatic ping frames will be sent.
+//
+// Parameters:
+//   ctx      - The WebSocket context
+//   interval - Ping interval in seconds (0 to disable)
+//
+// Returns:
+//   0 on success, -1 on failure
+//------------------------------------------------------------------------------
+int ws_set_ping_pong(ws_ctx* ctx, int interval) {
+    if (!ctx) {
+        logToFile2("MWS: Invalid context in ws_set_ping_pong\n");
+        return -1;
+    }
+    
+    ctx->ping_interval = interval;
+    ctx->last_ping_time = time(NULL);
+    
+    char logMsg[100];
+    if (interval > 0) {
+        snprintf(logMsg, sizeof(logMsg), "MWS: Ping/pong enabled with %d second interval\n", interval);
+    } else {
+        snprintf(logMsg, sizeof(logMsg), "MWS: Ping/pong disabled\n");
+    }
+    logToFile2(logMsg);
+    
+    return 0;
 }

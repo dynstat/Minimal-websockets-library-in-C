@@ -50,6 +50,12 @@ volatile bool terminateThread = false;
 volatile bool connectionFailed = false;  // New flag to indicate failed connection attempts
 
 // Server check thread function
+// The __stdcall calling convention is used for calling functions in the Windows API.
+// It specifies how the function receives parameters from the caller and how the stack is cleaned up.
+// In __stdcall, the callee cleans the stack, which can lead to more efficient code in certain scenarios.
+// This calling convention is commonly used for Windows API functions and is defined in the Windows headers.
+// The function name is also decorated with an underscore prefix and a trailing '@' followed by the number of bytes of parameters.
+// Here, we define the serverCheckThreadFunc function using the __stdcall calling convention.
 unsigned __stdcall serverCheckThreadFunc(void* arg) {
     const char* host = "localhost";
     int port = 8765;
