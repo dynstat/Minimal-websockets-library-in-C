@@ -47,6 +47,7 @@ CONDITION_VARIABLE clientConnectedCV;
 volatile bool serverAvailable = false;
 volatile bool clientConnected = false;
 volatile bool terminateThread = false;
+volatile bool connectionFailed = false;  // New flag to indicate failed connection attempts
 
 // Server check thread function
 unsigned __stdcall serverCheckThreadFunc(void* arg) {
@@ -62,14 +63,24 @@ unsigned __stdcall serverCheckThreadFunc(void* arg) {
             SleepConditionVariableCS(&clientConnectedCV, &stateLock, INFINITE);
         }
         
-        // Reset server availability flag when starting to check
-        serverAvailable = false;
+        // Check if connection failed - if so, reset server availability
+        if (connectionFailed) {
+            serverAvailable = false;
+            connectionFailed = false;
+        }
         LeaveCriticalSection(&stateLock);
         
         if (terminateThread) break;
         
         // Check server availability with exponential backoff
         while (!terminateThread) {
+            EnterCriticalSection(&stateLock);
+            bool isAvailable = serverAvailable;
+            LeaveCriticalSection(&stateLock);
+            
+            // Skip check if we already know server is available
+            if (isAvailable) break;
+            
             if (ws_check_server_available(host, port)) {
                 // Server is available
                 EnterCriticalSection(&stateLock);
@@ -85,12 +96,12 @@ unsigned __stdcall serverCheckThreadFunc(void* arg) {
             
             printf("Server check thread: Server not available. Retrying in %d ms...\n", retryDelay);
             Sleep(retryDelay);
-            retryDelay = min(retryDelay * 2, 30000); // Exponential backoff, capped at 30 seconds
+            retryDelay = min(retryDelay * 2, 4000); // Exponential backoff, capped at 4 seconds
         }
         
         // Wait for client to connect or for thread termination
         EnterCriticalSection(&stateLock);
-        while (serverAvailable && !clientConnected && !terminateThread) {
+        while (serverAvailable && !clientConnected && !connectionFailed && !terminateThread) {
             // Server is available but client not yet connected
             SleepConditionVariableCS(&serverAvailableCV, &stateLock, INFINITE);
         }
@@ -146,49 +157,50 @@ int main(void) {
             continue;
         }
 
-        // Implement exponential backoff for connection attempts
-        int retryDelay = 2000; // Reset retry delay
+        // Try to connect with exponential backoff
         int connectAttempts = 0;
-        int maxConnectAttempts = 5; // Maximum number of connection attempts before giving up
+        int maxConnectAttempts = 5;
+        int connectRetryDelay = 2000; // Start with 2 seconds
         bool connected = false;
         
-        while (connectAttempts < maxConnectAttempts && !connected) {
+        while (connectAttempts < maxConnectAttempts) {
             if (ws_connect(ctx, "ws://localhost:8765/") == 0) {
                 connected = true;
-                
-                // Update connection state
+                break; // Successfully connected
+            }
+            
+            connectAttempts++;
+            if (connectAttempts >= maxConnectAttempts) {
+                // Mark connection as failed after max attempts
                 EnterCriticalSection(&stateLock);
-                clientConnected = true;
+                connectionFailed = true;
                 LeaveCriticalSection(&stateLock);
                 
-                // Signal server check thread that client is connected
-                WakeConditionVariable(&clientConnectedCV);
+                // Signal server check thread to re-verify server availability
+                WakeConditionVariable(&serverAvailableCV);
                 break;
             }
             
-            printf("ws_client: Failed to connect to the server. Attempt %d of %d. Retrying in %d ms...\n", 
-                   connectAttempts + 1, maxConnectAttempts, retryDelay);
-            Sleep(retryDelay);
-            retryDelay = min(retryDelay * 2, 30000); // Exponential backoff, capped at 30 seconds
-            connectAttempts++;
+            printf("ws_client: Failed to connect to the server. Attempt %d of %d. Retrying in %d ms...\n",
+                   connectAttempts, maxConnectAttempts, connectRetryDelay);
+            Sleep(connectRetryDelay);
+            connectRetryDelay = min(connectRetryDelay * 2, 4000); //  backoff
         }
         
         if (!connected) {
-            printf("ws_client: Failed to connect after %d attempts. Restarting connection process.\n", maxConnectAttempts);
+            printf("ws_client: Could not connect after %d attempts. Will check server availability again.\n", 
+                   maxConnectAttempts);
             ws_destroy_ctx(ctx);
-            
-            // Reset server availability to trigger rechecking
-            EnterCriticalSection(&stateLock);
-            serverAvailable = false;
-            LeaveCriticalSection(&stateLock);
-            
-            // Signal server check thread to resume checking
-            WakeConditionVariable(&serverAvailableCV);
             continue;
         }
         
         printf("ws_client: Connected to WebSocket server at ws://localhost:8765/!\n");
 
+        // Update connection state
+        EnterCriticalSection(&stateLock);
+        clientConnected = true;
+        LeaveCriticalSection(&stateLock);
+        
         // Communication loop: as long as the connection remains open
         time_t lastMsgTime = time(NULL);
         while (ws_get_state(ctx) == WS_STATE_OPEN) {
