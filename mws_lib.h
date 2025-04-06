@@ -83,6 +83,10 @@ extern "C" {
 
     void print_hex2(const uint8_t* data, size_t length);
 
+
+    int ws_set_ping_pong(ws_ctx* ctx, int interval);
+
+
     int ws_check_connection(ws_ctx* ctx);
 
 #ifdef __cplusplus

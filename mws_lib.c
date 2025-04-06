@@ -202,32 +202,25 @@ int ws_init(void) {
 //------------------------------------------------------------------------------
 // Function: ws_create_ctx
 //
-// Allocates and initializes a new WebSocket context structure.
+// Creates and initializes a new WebSocket context.
 //------------------------------------------------------------------------------
 ws_ctx* ws_create_ctx(void) {
     logToFile2("MWS: Creating WebSocket context...\n");
     ws_ctx* ctx = (ws_ctx*)malloc(sizeof(ws_ctx));
-    if (ctx) {
-        logToFile2("MWS: WebSocket context allocated successfully.\n");
-        memset(ctx, 0, sizeof(ws_ctx));
-        ctx->socket = INVALID_SOCKET;
-        ctx->state = WS_STATE_CLOSED;
-        ctx->last_ping_time = time(NULL);
-        ctx->ping_interval = 0;  // Ping/pong disabled by default BUT NOT BEING USED ANYWHERE YET
-        ctx->recv_buffer_size = 1024;
-        ctx->recv_buffer = (char*)malloc(ctx->recv_buffer_size);
-        if (ctx->recv_buffer) {
-            logToFile2("MWS: Receive buffer allocated successfully.\n");
-            ctx->recv_buffer_len = 0;
-        } else {
-            logToFile2("MWS: Failed to allocate receive buffer.\n");
-            free(ctx);
-            return NULL;
-        }
-        logToFile2("MWS: WebSocket context initialized.\n");
-    } else {
-        logToFile2("MWS: Failed to allocate WebSocket context.\n");
+    if (!ctx) {
+        logToFile2("MWS: Failed to allocate memory for WebSocket context\n");
+        return NULL;
     }
+    
+    memset(ctx, 0, sizeof(ws_ctx));
+    ctx->socket = INVALID_SOCKET;
+    ctx->state = WS_STATE_CLOSED;
+    ctx->recv_buffer = NULL;
+    ctx->recv_buffer_size = 0;
+    ctx->recv_buffer_len = 0;
+    ctx->ping_interval = 30;  // Default to 30 seconds
+    ctx->last_ping_time = time(NULL);
+    
     return ctx;
 }
 
@@ -375,6 +368,15 @@ int ws_connect(ws_ctx* ctx, const char* uri) {
         return -1;
     }
     logToFile2("MWS: WebSocket connection established successfully\n");
+
+    // // Set socket to non-blocking mode
+    // u_long mode = 1;
+    // if (ioctlsocket(ctx->socket, FIONBIO, &mode) != 0) {
+    //     logToFile2("MWS: Failed to set socket to non-blocking mode\n");
+    //     closesocket(ctx->socket);
+    //     return -1;
+    // }
+
     return 0;
 }
 
@@ -469,6 +471,8 @@ int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
         // Read at least the 2-byte header.
         uint8_t header[2];
         int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
+        logToFile2("MWS: Receiving WebSocket frame...\n");
+        logToFileI2(bytes_received);
         if (bytes_received != 2) {
             return -1;
         }
@@ -807,8 +811,16 @@ static int ws_handle_ping(ws_ctx* ctx) {
 int ws_service(ws_ctx* ctx) {
     logToFile2("MWS: Servicing WebSocket connection for ping/pong...\n");
 
+    if (!ctx || ctx->socket == INVALID_SOCKET) {
+        logToFile2("MWS: Invalid context or socket in ws_service\n");
+        return -1;
+    }
+
+    // First, check for incoming control frames with non-blocking peek
     uint8_t header[2];
-    int bytes_received = recv(ctx->socket, (char*)header, 2, MSG_PEEK);
+    int flags = MSG_PEEK;  // Just use peek without MSG_DONTWAIT (Windows doesn't have it)
+    int bytes_received = recv(ctx->socket, (char*)header, 2, flags);
+    
     if (bytes_received > 0) {
         int opcode = header[0] & 0x0F;
         switch(opcode) {
@@ -830,31 +842,34 @@ int ws_service(ws_ctx* ctx) {
                 ws_close(ctx);
                 return -1;
         }
-    }
-
-    // Send periodic ping frames if the time interval has elapsed.
-    ctx->last_ping_time = 0;
-    time_t current_time = time(NULL);
-    if (current_time - ctx->last_ping_time >= (PING_TIMEOUT_MS / 1000)) {
-        uint8_t ping_frame[] = { 0x89, 0x00 };  // 0x89: FIN + PING opcode, 0x00: no payload
-        if (send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0) != sizeof(ping_frame)) {
-            logToFile2("MWS: Failed to send ping frame\n");
+    } else if (bytes_received == -1) {
+        int error = WSAGetLastError();
+        if (error != WSAEWOULDBLOCK && error != WSAEINPROGRESS) {
+            // Real error occurred
+            char errMsg[256];
+            snprintf(errMsg, sizeof(errMsg), "MWS: Socket error during service: %d\n", error);
+            logToFile2(errMsg);
             return -1;
         }
-        fd_set read_fds;
-        struct timeval tv;
-        FD_ZERO(&read_fds);
-        FD_SET(ctx->socket, &read_fds);
-        tv.tv_sec = PONG_TIMEOUT_MS / 1000;
-        tv.tv_usec = (PONG_TIMEOUT_MS % 1000) * 1000;
-
-        if (select(ctx->socket + 1, &read_fds, NULL, NULL, &tv) <= 0) {
-            logToFile2("MWS: Pong timeout - closing connection\n");
-            ws_close(ctx);
-            return -1;
-        }
-        ctx->last_ping_time = current_time;
+        // WSAEWOULDBLOCK means no data available, which is normal
     }
+
+    // Send periodic ping frames if the time interval has elapsed
+    // Only do this if ping_interval is set (greater than 0)
+    if (ctx->ping_interval > 0) {
+        time_t current_time = time(NULL);
+        if (current_time - ctx->last_ping_time >= ctx->ping_interval) {
+            logToFile2("MWS: Sending periodic ping frame\n");
+            uint8_t ping_frame[] = { 0x89, 0x00 };  // 0x89: FIN + PING opcode, 0x00: no payload
+            if (send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0) != sizeof(ping_frame)) {
+                logToFile2("MWS: Failed to send ping frame\n");
+                return -1;
+            }
+            ctx->last_ping_time = current_time;
+            logToFile2("MWS: Ping frame sent successfully\n");
+        }
+    }
+    
     return 0;
 }
 
