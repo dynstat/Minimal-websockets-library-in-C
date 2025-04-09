@@ -29,10 +29,11 @@ extern "C" {
 
 // WebSocket connection states
     typedef enum {
-        WS_STATE_CONNECTING,
-        WS_STATE_OPEN,
-        WS_STATE_CLOSING,
-        WS_STATE_CLOSED
+        WS_STATE_CONNECTING,    // Connection has been initiated but not completed
+        WS_STATE_OPEN,          // Connection is established and communication is possible
+        WS_STATE_CLOSING,       // Connection is in the process of closing
+        WS_STATE_CLOSED,        // Connection is closed or couldn't be opened
+        WS_STATE_UNKNOWN        // State is unknown or not determined
     } ws_state;
 
     // WebSocket context structure
