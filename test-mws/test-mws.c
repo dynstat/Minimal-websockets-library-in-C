@@ -23,7 +23,7 @@ int main() {
     }
 
     printf("Connecting to WebSocket server...\n");
-    if (ws_connect(ctx, "ws://localhost:8765") != 0) {
+    if (ws_connect(ctx, "ws://localhost:8766") != 0) {
         printf("WebSocket connection failed.\n");
         ws_destroy_ctx(ctx);
         ws_cleanup();

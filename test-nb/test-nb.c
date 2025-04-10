@@ -1,225 +1,281 @@
-#include "mws_lib.h"
+/*
+ * ws_client.c
+ *
+ * A sample WebSocket client that uses the mws_lib library for client-side
+ * WebSocket operations. This client uses a separate thread to check server
+ * availability and connects using the URI "ws://localhost:8765/" when available.
+ *
+ * The communication loop does the following:
+ *   - Calls ws_service() periodically to handle WebSocket control frames
+ *     (ping/pong/close).
+ *   - Receives any incoming data from the WebSocket.
+ *   - Sends a test message every 10 seconds.
+ *
+ * The client stays connected until either the client or server closes the connection.
+ *
+ * This file is intended to be built using Visual Studio Code on Windows.
+ */
+
+// IMPORTANT: Define WIN32_LEAN_AND_MEAN before any Windows headers
+#define WIN32_LEAN_AND_MEAN
+
+// Include Windows headers first
+#include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <process.h>  // For _beginthreadex
+
+// Then include standard C headers
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include <time.h>
+#include <stdbool.h>
 
-// Add these Windows networking headers in the correct order
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <iphlpapi.h>
-
+// Finally include your custom headers
+#include "mws_lib.h"
 // Link with Ws2_32.lib
-#pragma comment(lib, "Ws2_32.lib")
-#pragma comment(lib, "iphlpapi.lib")
+//#pragma comment(lib, "Ws2_32.lib")
 
-// ANSI color codes for better visibility
-#define ANSI_COLOR_GREEN   "\x1b[32m"
-#define ANSI_COLOR_YELLOW  "\x1b[33m"
-#define ANSI_COLOR_RED     "\x1b[31m"
-#define ANSI_COLOR_BLUE    "\x1b[34m"
-#define ANSI_COLOR_RESET   "\x1b[0m"
+// Thread synchronization objects
+HANDLE serverCheckThread = NULL;
+CRITICAL_SECTION stateLock;
+CONDITION_VARIABLE serverAvailableCV;
+CONDITION_VARIABLE clientConnectedCV;
 
-// Configuration
-#define SERVER_HOST "localhost"
-#define SERVER_PORT 8765
-#define RECONNECT_INTERVAL 2000  // 2 seconds
-#define MAX_BUFFER_SIZE 1024000  // 1MB
+// Shared state variables
+volatile bool serverAvailable = false;
+volatile bool clientConnected = false;
+volatile bool terminateThread = false;
+volatile bool connectionFailed = false;  // New flag to indicate failed connection attempts
 
-// Function to check if a server is available at the TCP level
-static int check_server_available(const char* host, int port) {
-    struct addrinfo hints, * result;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;     // Allow IPv4 or IPv6
-    hints.ai_socktype = SOCK_STREAM; // TCP stream sockets
+// Server check thread function
+// The __stdcall calling convention is used for calling functions in the Windows API.
+// It specifies how the function receives parameters from the caller and how the stack is cleaned up.
+// In __stdcall, the callee cleans the stack, which can lead to more efficient code in certain scenarios.
+// This calling convention is commonly used for Windows API functions and is defined in the Windows headers.
+// The function name is also decorated with an underscore prefix and a trailing '@' followed by the number of bytes of parameters.
+// Here, we define the serverCheckThreadFunc function using the __stdcall calling convention.
+unsigned __stdcall serverCheckThreadFunc(void* arg) {
+    const char* host = "localhost";
+    int port = 8765;
+    int retryDelay = 2000; // Start with 2 seconds
 
-    // Convert port number to string
-    char port_str[6];
-    snprintf(port_str, sizeof(port_str), "%d", port);
-
-    // Get address information
-    if (getaddrinfo(host, port_str, &hints, &result) != 0) {
-        return 0; // Failed to get address info
-    }
-
-    // Create a socket
-    SOCKET sock = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (sock == INVALID_SOCKET) {
-        freeaddrinfo(result);
-        return 0; // Failed to create socket
-    }
-
-    // Set socket to non-blocking mode
-    unsigned long mode = 1;
-    ioctlsocket(sock, FIONBIO, &mode);
-
-    // Attempt to connect
-    connect(sock, result->ai_addr, (int)result->ai_addrlen);
-
-    // Set up for select() to check connection status
-    fd_set write_fds;
-    struct timeval timeout;
-    FD_ZERO(&write_fds);
-    FD_SET(sock, &write_fds);
-    timeout.tv_sec = 1;  // 1 second timeout
-    timeout.tv_usec = 0;
-
-    int available = 0;
-    // Check if the socket is ready for writing (connected) within the timeout period
-    if (select(sock + 1, NULL, &write_fds, NULL, &timeout) == 1) {
-        int error = 0;
-        int len = sizeof(error);
-        // Check if there's any error on the socket
-        getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&error, &len);
-        if (error == 0) {
-            available = 1; // Connection successful
+    while (!terminateThread) {
+        // Check if client is connected - if so, wait until disconnected
+        EnterCriticalSection(&stateLock);
+        while (clientConnected && !terminateThread) {
+            // Client is connected, wait for it to disconnect
+            SleepConditionVariableCS(&clientConnectedCV, &stateLock, INFINITE);
         }
+        
+        // Check if connection failed - if so, reset server availability
+        if (connectionFailed) {
+            serverAvailable = false;
+            connectionFailed = false;
+        }
+        LeaveCriticalSection(&stateLock);
+        
+        if (terminateThread) break;
+        
+        // Check server availability with exponential backoff
+        while (!terminateThread) {
+            EnterCriticalSection(&stateLock);
+            bool isAvailable = serverAvailable;
+            LeaveCriticalSection(&stateLock);
+            
+            // Skip check if we already know server is available
+            if (isAvailable) break;
+            
+            if (ws_check_server_available(host, port)) {
+                // Server is available
+                EnterCriticalSection(&stateLock);
+                serverAvailable = true;
+                LeaveCriticalSection(&stateLock);
+                
+                // Signal main thread that server is available
+                WakeConditionVariable(&serverAvailableCV);
+                
+                printf("Server check thread: Server is available!\n");
+                break;
+            }
+            
+            printf("Server check thread: Server not available. Retrying in %d ms...\n", retryDelay);
+            Sleep(retryDelay);
+            retryDelay = min(retryDelay * 2, 4000); // Exponential backoff, capped at 4 seconds
+        }
+        
+        // Wait for client to connect or for thread termination
+        EnterCriticalSection(&stateLock);
+        while (serverAvailable && !clientConnected && !connectionFailed && !terminateThread) {
+            // Server is available but client not yet connected
+            SleepConditionVariableCS(&serverAvailableCV, &stateLock, INFINITE);
+        }
+        LeaveCriticalSection(&stateLock);
     }
-
-    // Clean up
-    closesocket(sock);
-    freeaddrinfo(result);
-    return available;
-}
-
-// Function to handle WebSocket communication
-static int handle_websocket_communication(ws_ctx* ctx) {
-    // Send first message
-    const char* message1 = "Hello, WebSocket!";
-    printf(ANSI_COLOR_YELLOW "Sending: %s\n" ANSI_COLOR_RESET, message1);
-
-    if (ws_send(ctx, message1, strlen(message1), WS_OPCODE_TEXT) != 0) {
-        printf(ANSI_COLOR_RED "Failed to send first message\n" ANSI_COLOR_RESET);
-        return -1;
-    }
-
-    // Receive echo response
-    char recv_buffer[1024];
-    int recv_len = ws_recv(ctx, recv_buffer, sizeof(recv_buffer));
-    if (recv_len > 0) {
-        recv_buffer[recv_len] = '\0';
-        printf(ANSI_COLOR_GREEN "Received echo: %s\n" ANSI_COLOR_RESET, recv_buffer);
-    }
-    else {
-        printf(ANSI_COLOR_RED "Failed to receive echo response\n" ANSI_COLOR_RESET);
-        return -1;
-    }
-
-    // Receive additional message
-    recv_len = ws_recv(ctx, recv_buffer, sizeof(recv_buffer));
-    if (recv_len > 0) {
-        recv_buffer[recv_len] = '\0';
-        printf(ANSI_COLOR_GREEN "Received additional message: %s\n" ANSI_COLOR_RESET, recv_buffer);
-    }
-
-    // Send second message
-    const char* message2 = "Thank you, server!";
-    printf(ANSI_COLOR_YELLOW "Sending: %s\n" ANSI_COLOR_RESET, message2);
-
-    if (ws_send(ctx, message2, strlen(message2), WS_OPCODE_TEXT) != 0) {
-        printf(ANSI_COLOR_RED "Failed to send second message\n" ANSI_COLOR_RESET);
-        return -1;
-    }
-
-    // Receive large response
-    char* large_buffer = (char*)malloc(MAX_BUFFER_SIZE);
-    if (!large_buffer) {
-        printf(ANSI_COLOR_RED "Failed to allocate large buffer\n" ANSI_COLOR_RESET);
-        return -1;
-    }
-
-    recv_len = ws_recv(ctx, large_buffer, MAX_BUFFER_SIZE - 1);
-    if (recv_len > 0) {
-        large_buffer[recv_len] = '\0';
-        printf(ANSI_COLOR_GREEN "Received large response (length: %d)\n" ANSI_COLOR_RESET, recv_len);
-        printf("First 50 characters: %.50s...\n", large_buffer);
-    }
-    else {
-        printf(ANSI_COLOR_RED "Failed to receive large response\n" ANSI_COLOR_RESET);
-        free(large_buffer);
-        return -1;
-    }
-
-    free(large_buffer);
+    
+    printf("Server check thread: Terminating\n");
     return 0;
 }
 
-int main() {
-    printf(ANSI_COLOR_BLUE "WebSocket Client Test Program\n" ANSI_COLOR_RESET);
+int main(void) {
+    // Seed the random generator once
+    srand((unsigned int)time(NULL));
 
+    // Initialize synchronization objects
+    InitializeCriticalSection(&stateLock);
+    InitializeConditionVariable(&serverAvailableCV);
+    InitializeConditionVariable(&clientConnectedCV);
+
+    // Initialize Winsock. If this fails, exit.
     if (ws_init() != 0) {
-        printf(ANSI_COLOR_RED "Failed to initialize WebSocket library\n" ANSI_COLOR_RESET);
-        return -1;
+        fprintf(stderr, "ws_client: Failed to initialize Winsock.\n");
+        return 1;
+    }
+    printf("ws_client: Starting WebSocket client...\n");
+
+    // Start server check thread
+    serverCheckThread = (HANDLE)_beginthreadex(NULL, 0, serverCheckThreadFunc, NULL, 0, NULL);
+    if (serverCheckThread == NULL) {
+        fprintf(stderr, "ws_client: Failed to create server check thread.\n");
+        ws_cleanup();
+        return 1;
     }
 
-    ws_ctx* ctx = NULL;
-    char uri[256];
-    snprintf(uri, sizeof(uri), "ws://%s:%d", SERVER_HOST, SERVER_PORT);
-
-    printf("Starting connection loop. Press Ctrl+C to exit.\n");
-
     while (1) {
-        // Check server availability
-        printf("Checking server availability...\n");
-        if (!check_server_available(SERVER_HOST, SERVER_PORT)) {
-            printf(ANSI_COLOR_YELLOW "Server not available. Retrying in %d ms...\n" ANSI_COLOR_RESET,
-                RECONNECT_INTERVAL);
-            Sleep(RECONNECT_INTERVAL);
+        // Wait for server to become available
+        EnterCriticalSection(&stateLock);
+        while (!serverAvailable && !terminateThread) {
+            printf("ws_client: Waiting for server to become available...\n");
+            SleepConditionVariableCS(&serverAvailableCV, &stateLock, INFINITE);
+        }
+        LeaveCriticalSection(&stateLock);
+        
+        if (terminateThread) break;
+        
+        printf("ws_client: Server is available! Attempting to connect...\n");
+
+        // Create a new WebSocket context
+        ws_ctx* ctx = ws_create_ctx();
+        if (ctx == NULL) {
+            printf("ws_client: Failed to allocate WebSocket context. Retrying...\n");
+            Sleep(2000);
             continue;
         }
 
-        printf(ANSI_COLOR_GREEN "Server is available!\n" ANSI_COLOR_RESET);
-
-        // Create WebSocket context if needed
-        if (!ctx) {
-            ctx = ws_create_ctx();
-            if (!ctx) {
-                printf(ANSI_COLOR_RED "Failed to create WebSocket context\n" ANSI_COLOR_RESET);
-                ws_cleanup();
-                return -1;
+        // Try to connect with exponential backoff
+        int connectAttempts = 0;
+        int maxConnectAttempts = 5;
+        int connectRetryDelay = 2000; // Start with 2 seconds
+        bool connected = false;
+        
+        while (connectAttempts < maxConnectAttempts) {
+            if (ws_connect(ctx, "ws://localhost:8765/") == 0) {
+                connected = true;
+                break; // Successfully connected
             }
+            
+            connectAttempts++;
+            if (connectAttempts >= maxConnectAttempts) {
+                // Mark connection as failed after max attempts
+                EnterCriticalSection(&stateLock);
+                connectionFailed = true;
+                LeaveCriticalSection(&stateLock);
+                
+                // Signal server check thread to re-verify server availability
+                WakeConditionVariable(&serverAvailableCV);
+                break;
+            }
+            
+            printf("ws_client: Failed to connect to the server. Attempt %d of %d. Retrying in %d ms...\n",
+                   connectAttempts, maxConnectAttempts, connectRetryDelay);
+            Sleep(connectRetryDelay);
+            connectRetryDelay = min(connectRetryDelay * 2, 4000); //  backoff
         }
+        
+        if (!connected) {
+            printf("ws_client: Could not connect after %d attempts. Will check server availability again.\n", 
+                   maxConnectAttempts);
+            ws_destroy_ctx(ctx);
+            continue;
+        }
+        
+        printf("ws_client: Connected to WebSocket server at ws://localhost:8765/!\n");
 
-        // Attempt WebSocket connection
-        printf("Attempting WebSocket connection to %s...\n", uri);
-        if (ws_connect(ctx, uri) == 0) {
-            printf(ANSI_COLOR_GREEN "WebSocket connected successfully!\n" ANSI_COLOR_RESET);
-
-            // Handle WebSocket communication
-            if (handle_websocket_communication(ctx) == 0) {
-                printf(ANSI_COLOR_GREEN "Communication completed successfully\n" ANSI_COLOR_RESET);
+        // Update connection state
+        EnterCriticalSection(&stateLock);
+        clientConnected = true;
+        LeaveCriticalSection(&stateLock);
+        
+        // Communication loop: as long as the connection remains open
+        time_t lastMsgTime = time(NULL);
+        while (ws_get_state(ctx) == WS_STATE_OPEN) {
+            // Process control frames (like PING, PONG, and CLOSE)
+            if (ws_service(ctx) != 0 || !ws_check_connection(ctx)) {
+                printf("ws_client: Connection issue detected during service.\n");
+                break;
             }
 
-            // Service the connection
-            while (ws_get_state(ctx) == WS_STATE_OPEN) {
-                if (ws_service(ctx) != 0) {
-                    printf(ANSI_COLOR_RED "Connection lost\n" ANSI_COLOR_RESET);
-                    break;
+            // Check for any incoming application data
+            char recvBuffer[1024];
+            int bytesReceived = ws_recv(ctx, recvBuffer, sizeof(recvBuffer) - 1);
+            if (bytesReceived > 0) {
+                // Null-terminate and print the received data
+                recvBuffer[bytesReceived] = '\0';
+                printf("ws_client: Received: %s\n", recvBuffer);
+            } else if (bytesReceived < 0 && ws_get_state(ctx) == WS_STATE_OPEN) {
+                // Only log errors if we're still supposed to be connected
+                printf("ws_client: Error receiving data.\n");
+            }
+
+            // Every 10 seconds, send a test message
+            time_t currentTime = time(NULL);
+            if (currentTime - lastMsgTime >= 10) {
+                const char* testMsg = "Hello from WebSocket client!";
+                if (ws_send(ctx, testMsg, strlen(testMsg), WS_OPCODE_TEXT) == 0) {
+                    printf("ws_client: Sent: %s\n", testMsg);
+                } else {
+                    printf("ws_client: Failed to send test message.\n");
+                    break; // Exit the loop if sending fails
                 }
-                Sleep(100);  // Small delay to prevent CPU overuse
+                lastMsgTime = currentTime;
             }
 
-            // Close connection
-            printf("Closing connection...\n");
-            ws_close(ctx);
-        }
-        else {
-            printf(ANSI_COLOR_RED "WebSocket connection failed\n" ANSI_COLOR_RESET);
+            // Sleep briefly (100 ms) so as to yield CPU time
+            Sleep(100);
         }
 
-        // Cleanup and prepare for reconnection
+        // Implement graceful closing
+        printf("ws_client: Connection ending. Sending close frame...\n");
+        ws_close(ctx); // Send a proper close frame
+        Sleep(500);    // Give time for the close handshake to complete
+        
+        printf("ws_client: Disconnected from server. Cleaning up context.\n");
         ws_destroy_ctx(ctx);
-        ctx = NULL;
-        printf("Waiting before reconnection attempt...\n");
-        Sleep(RECONNECT_INTERVAL);
+        
+        // Update connection state
+        EnterCriticalSection(&stateLock);
+        clientConnected = false;
+        LeaveCriticalSection(&stateLock);
+        
+        // Signal server check thread that client is disconnected
+        WakeConditionVariable(&clientConnectedCV);
+        
+        // Wait a moment before attempting to reconnect
+        Sleep(1000);
     }
 
-    // Cleanup (this part won't be reached in this example)
-    if (ctx) {
-        ws_destroy_ctx(ctx);
-    }
+    // Signal thread to terminate and wait for it
+    terminateThread = true;
+    WakeConditionVariable(&serverAvailableCV);
+    WakeConditionVariable(&clientConnectedCV);
+    WaitForSingleObject(serverCheckThread, INFINITE);
+    CloseHandle(serverCheckThread);
+    
+    // Cleanup synchronization objects
+    DeleteCriticalSection(&stateLock);
+    
+    // Cleanup Winsock resources
     ws_cleanup();
-
     return 0;
 }

@@ -1,34 +1,33 @@
-# Minimal WebSocket Library in C - mws_lib (TCP socket style without event loop)
+# WebSocket Library in C
 
-A straightforward WebSocket client library implemented in C for Windows using Winsock2. This library provides a TCP socket-style interface for WebSocket communication, making it easy to use without requiring an additional event loop at the application layer.
+A simple WebSocket client library implemented in C for Windows using Winsock2. This library allows you to establish WebSocket connections, send and receive messages, and handle connection states.
 
 ## Features
 
-- **Simplified Usage**: Offers a TCP socket-style interface for WebSocket operations.
-- **Automatic WebSocket Handshake**: Handles the WebSocket handshake process internally.
-- **Large Data Transfer**: Supports sending and receiving large data chunks efficiently.
-- **Flexible Communication**: Allows sending and receiving messages from anywhere in your code.
-- **Windows Compatibility**: Designed specifically for Windows platforms using Winsock2.
+- **WebSocket Handshake**: Establishes a WebSocket connection with the server.
+- **Message Sending**: Supports sending text and binary messages.
+- **Message Receiving**: Handles incoming messages from the server.
+- **Connection Management**: Manages connection states and gracefully closes connections.
 
 ## Project Structure
 
-This project is a Visual Studio solution containing two main components:
+This project is a Visual Studio solution containing two projects:
 
 1. **mws_lib**: A static library project for the WebSocket implementation.
-2. **test-mws**: A test project demonstrating the usage of the WebSocket library.
+2. **test-mws**: A test project to demonstrate the usage of the WebSocket library.
 
 ### Key Files
 
-- `mws_lib.c` and `mws_lib.h`: Core implementation and header files for the WebSocket library.
-- `test-mws/test-mws.c`: Example program showcasing the library's usage.
+- `mws_lib.c` and `mws_lib.h`: Implementation and header files for the WebSocket library.
+- `test-mws/test-mws.c`: Example program demonstrating how to use the WebSocket library.
 - `mws_lib.sln`: Visual Studio solution file.
 
 ## Build Instructions
 
 ### Prerequisites
 
-- **Windows OS**: This library is specifically designed for Windows platforms.
-- **Visual Studio**: Use a recent version of Visual Studio for building the project.
+- **Windows OS**: The library is designed for Windows platforms.
+- **Visual Studio**: This project uses Visual Studio for building. Ensure you have a recent version installed.
 
 ### Steps
 
@@ -44,25 +43,18 @@ This project is a Visual Studio solution containing two main components:
    - Select "Build" to compile the test program.
 
 4. **Run the Test Program**
-   - Run the websocket server first, run `python server-2.py`  
    - Right-click on the `test-mws` project.
    - Select "Set as Startup Project".
    - Press F5 or click "Start Debugging" to run the program.
 
 ## Usage
 
-The library is designed to be simple and intuitive, similar to using standard TCP sockets. Key functions include:
-
-- Initializing a WebSocket connection
-- Sending data (text or binary)
-- Receiving data
-- Closing the connection
-
-Refer to `test-mws/test-mws.c` for a detailed example of how to use the library in your application.
+Refer to `test-mws/test-mws.c` for a comprehensive example of how to initialize the library, establish a connection, send and receive messages, and clean up resources.
 
 ## Additional Files
 
-- `server-2.py`: A Python script included for testing purposes (server-side implementation).
+- `server-2.py`: A Python script, likely for testing purposes (server implementation).
+
 
 ## License
 

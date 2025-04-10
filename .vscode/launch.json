@@ -8,8 +8,8 @@
       "args": [],
       "stopAtEntry": false,
       "externalConsole": true,
-      "cwd": "d:/proj/mws-c",
-      "program": "d:/proj/mws-c/build/Debug/outDebug",
+      "cwd": "d:/test/ws-in-c-main-git",
+      "program": "d:/test/ws-in-c-main-git/build/Debug/outDebug",
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [

@@ -8,7 +8,11 @@
 #include <string.h>
 #include <time.h>
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #endif
 
 #ifdef __cplusplus
@@ -25,19 +29,22 @@ extern "C" {
 
 // WebSocket connection states
     typedef enum {
-        WS_STATE_CONNECTING,
-        WS_STATE_OPEN,
-        WS_STATE_CLOSING,
-        WS_STATE_CLOSED
+        WS_STATE_CONNECTING,    // Connection has been initiated but not completed
+        WS_STATE_OPEN,          // Connection is established and communication is possible
+        WS_STATE_CLOSING,       // Connection is in the process of closing
+        WS_STATE_CLOSED,        // Connection is closed or couldn't be opened
+        WS_STATE_UNKNOWN        // State is unknown or not determined
     } ws_state;
 
     // WebSocket context structure
     struct ws_ctx {
-        SOCKET socket;        // Socket handle for the WebSocket connection
-        ws_state state;       // Current state of the WebSocket connection
-        char* recv_buffer;    // Buffer to store received data
-        size_t recv_buffer_size;  // Total size of the receive buffer
-        size_t recv_buffer_len;   // Current length of data in the receive buffer
+        SOCKET socket;           // Socket handle for the WebSocket connection
+        ws_state state;          // Current state of the WebSocket connection
+        char* recv_buffer;       // Buffer to store received data
+        size_t recv_buffer_size; // Total size of the receive buffer
+        size_t recv_buffer_len;  // Current length of data in the receive buffer
+        int ping_interval;       // Interval in seconds between ping frames (0 = disabled)
+        time_t last_ping_time;   // Time when the last ping was sent
     };
     // WebSocket context
     typedef struct ws_ctx ws_ctx;
@@ -76,6 +83,12 @@ extern "C" {
     int ws_service(ws_ctx* ctx);
 
     void print_hex2(const uint8_t* data, size_t length);
+
+
+    int ws_set_ping_pong(ws_ctx* ctx, int interval);
+
+
+    int ws_check_connection(ws_ctx* ctx);
 
 #ifdef __cplusplus
 }
