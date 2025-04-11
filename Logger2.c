@@ -6,42 +6,42 @@ const char *filePath2 = "C:\\ProgramData\\softTokenReaderDriver.log";
 
 void logToFile2(const char *str)
 {
-    // UNREFERENCED_PARAMETER(str);
-    FILE *file;
-    errno_t err;
-    const char *mode = "a"; // Specify the file mode
+    UNREFERENCED_PARAMETER(str);
+    // FILE *file;
+    // errno_t err;
+    // const char *mode = "a"; // Specify the file mode
 
-    // Open the file using fopen_s
-    err = fopen_s(&file, filePath2, mode);
+    // // Open the file using fopen_s
+    // err = fopen_s(&file, filePath2, mode);
 
-    // Check if the file was opened successfully
-    if (err == 0 && file != NULL)
-    {
-        // Write the string to the file
-        fprintf(file, "%s", str);
-        // Close the file
-        fclose(file);
-    }
+    // // Check if the file was opened successfully
+    // if (err == 0 && file != NULL)
+    // {
+    //     // Write the string to the file
+    //     fprintf(file, "%s", str);
+    //     // Close the file
+    //     fclose(file);
+    // }
 }
 
 void logToFileI2(long some_int)
 {
-    // UNREFERENCED_PARAMETER(some_int);
-    FILE *file;
-    errno_t err;
-    const char *mode = "a"; // Specify the file mode
+    UNREFERENCED_PARAMETER(some_int);
+    // FILE *file;
+    // errno_t err;
+    // const char *mode = "a"; // Specify the file mode
 
-    // Open the file using fopen_s
-    err = fopen_s(&file, filePath2, mode);
+    // // Open the file using fopen_s
+    // err = fopen_s(&file, filePath2, mode);
 
-    // Check if the file was opened successfully
-    if (err == 0 && file != NULL)
-    {
-        // Write the unsigned long integer to the file
-        fprintf(file, "%ld\n", some_int);
-        // Close the file
-        fclose(file);
-    }
+    // // Check if the file was opened successfully
+    // if (err == 0 && file != NULL)
+    // {
+    //     // Write the unsigned long integer to the file
+    //     fprintf(file, "%ld\n", some_int);
+    //     // Close the file
+    //     fclose(file);
+    // }
 }
 
 void printHexBytesString2(const char *input, size_t size)
