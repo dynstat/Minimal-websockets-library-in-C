@@ -451,106 +451,281 @@ int ws_send(ws_ctx* ctx, const char* data, size_t length, int opcode) {
 }
 
 //------------------------------------------------------------------------------
-// Function: ws_recv
+// Function: ws_consume_full_frame
 //
-// Receives data from the WebSocket. It handles extended payload lengths,
-// (optionally) unmasks the payload if needed, and discards excess data if the
-// provided buffer length is too short.
+// Helper function to read and discard an entire WebSocket frame based on its header.
+// Assumes the first 2 bytes of the header have already been peeked.
+// Returns 0 on success, -1 on error or close.
 //------------------------------------------------------------------------------
-int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
-    logToFile2("MWS: Receiving WebSocket frame...\n");
+static int ws_consume_full_frame(ws_ctx* ctx, uint8_t header[2]) {
+    int bytes_read;
+    uint8_t actual_header[2];
 
-    if (ctx->state != WS_STATE_OPEN) {
+    // Consume the peeked header
+    bytes_read = recv(ctx->socket, (char*)actual_header, 2, 0);
+    if (bytes_read != 2) {
+        logToFile2("MWS: Failed to consume peeked header.\n");
         return -1;
     }
 
-    size_t total_received = 0;
-    bool final_fragment = false;
+    // Re-parse header info (could differ from peek if data arrived in between, though unlikely)
+    bool masked = (actual_header[1] & 0x80) != 0;
+    uint64_t payload_length = actual_header[1] & 0x7F;
 
-    while (!final_fragment && total_received < buffer_size) {
-        // Read at least the 2-byte header.
-        uint8_t header[2];
-        int bytes_received = recv(ctx->socket, (char*)header, 2, 0);
-        logToFile2("MWS: Receiving WebSocket frame...\n");
-        logToFileI2(bytes_received);
-        if (bytes_received != 2) {
+    // Read extended payload length if necessary
+    if (payload_length == 126) {
+        uint16_t extended_length;
+        bytes_read = recv(ctx->socket, (char*)&extended_length, 2, 0);
+        if (bytes_read != 2) return -1;
+        payload_length = ntohs(extended_length);
+    } else if (payload_length == 127) {
+        uint64_t extended_length;
+        bytes_read = recv(ctx->socket, (char*)&extended_length, 8, 0);
+        if (bytes_read != 8) return -1;
+        payload_length = ntohll(extended_length);
+    }
+
+    // Read and discard mask key if present
+    if (masked) {
+        char mask_key[4];
+        bytes_read = recv(ctx->socket, mask_key, 4, 0);
+        if (bytes_read != 4) return -1;
+    }
+
+    // Read and discard payload
+    if (payload_length > 0) {
+        char discard_buffer[1024];
+        uint64_t remaining_to_discard = payload_length;
+        while (remaining_to_discard > 0) {
+            size_t discard_now = (remaining_to_discard < sizeof(discard_buffer)) ? (size_t)remaining_to_discard : sizeof(discard_buffer);
+            bytes_read = recv(ctx->socket, discard_buffer, discard_now, 0);
+            if (bytes_read <= 0) {
+                 logToFile2("MWS: Error or close while consuming frame payload.\n");
+                 return -1; // Error during consumption
+            }
+            remaining_to_discard -= bytes_read;
+        }
+    }
+    return 0; // Successfully consumed
+}
+
+//------------------------------------------------------------------------------
+// Function: ws_handle_control_frame
+//
+// Sets socket to non-blocking, peeks for a frame. Restores blocking mode.
+// If a control frame was peeked, consumes it using blocking reads and handles it.
+// Returns:
+//   1 if a control frame was handled successfully.
+//   0 if no data, a non-control frame, or WSAEWOULDBLOCK during peek.
+//  -1 on error or if a CLOSE frame was handled (connection is now closing/closed).
+//------------------------------------------------------------------------------
+static int ws_handle_control_frame(ws_ctx* ctx) {
+     if (!ctx || ctx->socket == INVALID_SOCKET || ctx->state != WS_STATE_OPEN) {
+        return 0; // Nothing to do if not open
+    }
+
+    uint8_t header[2];
+    int peek_bytes = 0;
+    int result_status = 0; // Default: 0 (no action/no control frame)
+    unsigned long nonblock_mode = 1;
+    unsigned long block_mode = 0;
+
+    // --- Perform Non-Blocking Peek ---
+    // Set socket to non-blocking
+    if (ioctlsocket(ctx->socket, FIONBIO, &nonblock_mode) != 0) {
+        logToFile2("MWS: Failed to set non-blocking mode for peek.\n");
+        ws_close(ctx); return -1;
+    }
+
+    // Attempt the peek
+    peek_bytes = recv(ctx->socket, (char*)header, 2, MSG_PEEK);
+    // *** CAPTURE ERROR IMMEDIATELY IF RECV FAILED ***
+    int error_code_from_peek = (peek_bytes == SOCKET_ERROR) ? WSAGetLastError() : 0;
+
+    // Restore blocking mode immediately after peek attempt
+    if (ioctlsocket(ctx->socket, FIONBIO, &block_mode) != 0) {
+        // Log failure to restore, but the original peek error (if any) is more important
+        logToFile2("MWS: Failed to restore blocking mode after peek! Connection likely unstable.\n");
+        // Consider closing based on the original peek error below, or just log and continue
+        // ws_close(ctx); return -1; // Or handle based on error_code_from_peek
+    }
+
+    // --- Process Peek Result ---
+    if (peek_bytes == SOCKET_ERROR) {
+        // Use the saved error code
+        // int error = WSAGetLastError(); // OLD: Called too late
+        int error = error_code_from_peek; // NEW: Use the saved error code
+        if (error == WSAEWOULDBLOCK || error == WSAEINPROGRESS) {
+            // logToFile2("MWS: No data available during non-blocking peek.\n"); // Can be noisy
+            return 0; // Expected case when no data is ready
+        } else {
+            // Real socket error during peek
+            char errMsg[256]; snprintf(errMsg, sizeof(errMsg), "MWS: Socket error during non-blocking peek: %d\n", error); logToFile2(errMsg);
+            ws_close(ctx); // Close on error
+            return -1;
+        }
+    } else if (peek_bytes == 0) {
+        // Connection closed gracefully by peer
+        logToFile2("MWS: Connection closed by peer (detected during non-blocking peek).\n");
+        ws_close(ctx);
+        return -1;
+    } else if (peek_bytes != 2) {
+        // Should not happen with TCP
+         logToFile2("MWS: Non-blocking peek returned unexpected byte count. Closing.\n");
+         ws_close(ctx);
+         return -1;
+    }
+
+    // --- Peek successful, check opcode ---
+    int opcode = header[0] & 0x0F;
+    uint64_t payload_len_indicator = header[1] & 0x7F;
+
+    if (opcode == WS_OPCODE_PING || opcode == WS_OPCODE_PONG || opcode == WS_OPCODE_CLOSE) {
+
+        logToFile2("MWS: Non-blocking peek detected control frame. Attempting blocking consumption.\n");
+
+        // Validate control frame constraints from peeked header
+        if (payload_len_indicator > 125) {
+            logToFile2("MWS: Error - Peeked control frame with invalid payload length > 125. Closing.\n");
+            ws_fail_connection(ctx, 1002, "Protocol error");
+            // Try to consume the bad frame using blocking read now
+            ws_consume_full_frame(ctx, header); // Best effort consume
             return -1;
         }
 
-        final_fragment = (header[0] & 0x80) != 0;
-        int opcode = header[0] & 0x0F;
-        bool masked = (header[1] & 0x80) != 0;
-        uint64_t payload_length = header[1] & 0x7F;
+        // --- Consume the full control frame using standard BLOCKING reads ---
+        // (Socket is already back in blocking mode)
+        uint8_t frame_buffer[125] = {0}; // Max payload for control frame
+        uint8_t actual_header[2];
+        int bytes_read;
+        bool masked = false;
+        uint64_t payload_length = 0;
+        uint32_t mask_key = 0;
 
-        char logBuffer[256];
-        snprintf(logBuffer, sizeof(logBuffer), "Frame info: final=%d, opcode=%d, masked=%d, payload_length=%llu\n",
-                final_fragment, opcode, masked, payload_length);
-        logToFile2(logBuffer);
+        // 1. Consume header
+        bytes_read = recv(ctx->socket, (char*)actual_header, 2, 0);
+        if (bytes_read <= 0) { logToFile2("MWS: Error/close consuming header.\n"); ws_close(ctx); return -1; }
+        // Re-validate opcode just in case
+        if ((actual_header[0] & 0x0F) != opcode) { logToFile2("MWS: Opcode changed between peek and read! Aborting.\n"); return -1; }
 
-        if (payload_length == 126) {
-            uint16_t extended_length;
-            bytes_received = recv(ctx->socket, (char*)&extended_length, 2, 0);
-            if (bytes_received != 2) {
-                return -1;
-            }
-            payload_length = ntohs(extended_length);
-        }
-        else if (payload_length == 127) {
-            uint64_t extended_length;
-            bytes_received = recv(ctx->socket, (char*)&extended_length, 8, 0);
-            if (bytes_received != 8) {
-                return -1;
-            }
-            payload_length = ntohll(extended_length);
-        }
+        masked = (actual_header[1] & 0x80) != 0;
+        payload_length = actual_header[1] & 0x7F; // Already validated <= 125
 
-        uint32_t mask = 0;
+        // 2. Consume mask key (if present)
         if (masked) {
-            bytes_received = recv(ctx->socket, (char*)&mask, 4, 0);
-            if (bytes_received != 4) {
-                return -1;
-            }
+            logToFile2("MWS: Warning - Consuming masked control frame from server.\n");
+            bytes_read = recv(ctx->socket, (char*)&mask_key, 4, 0);
+            if (bytes_read <= 0) { logToFile2("MWS: Error/close consuming mask.\n"); ws_close(ctx); return -1; }
         }
 
-        size_t remaining_buffer = buffer_size - total_received;
-        size_t fragment_size = (payload_length < remaining_buffer) ? payload_length : remaining_buffer;
-        size_t bytes_to_receive = fragment_size;
-
-        while (bytes_to_receive > 0) {
-            bytes_received = recv(ctx->socket, buffer + total_received, bytes_to_receive, 0);
-            if (bytes_received <= 0) {
-                return total_received > 0 ? total_received : -1;
-            }
-            total_received += bytes_received;
-            bytes_to_receive -= bytes_received;
+        // 3. Consume payload
+        if (payload_length > 0) {
+             size_t total_payload_read = 0;
+             while(total_payload_read < payload_length) {
+                 bytes_read = recv(ctx->socket, (char*)frame_buffer + total_payload_read, (size_t)(payload_length - total_payload_read), 0);
+                 if (bytes_read <= 0) { // Error or connection closed during payload read
+                     logToFile2("MWS: Error/close while reading control payload.\n");
+                     ws_close(ctx);
+                     return -1;
+                 }
+                 total_payload_read += bytes_read;
+             }
         }
 
-        // Unmask the payload if needed.
+        // --- Frame fully consumed, now handle it ---
+        result_status = 1; // Assume handled successfully unless error occurs below
+
+        // Unmask payload if necessary
         if (masked) {
-            for (size_t i = total_received - fragment_size; i < total_received; i++) {
-                buffer[i] ^= ((uint8_t*)&mask)[i % 4];
-            }
+            apply_mask(frame_buffer, (size_t)payload_length, mask_key);
         }
 
-        // If the frame contains more data than fits the buffer, discard the extras.
-        if (fragment_size < payload_length) {
-            size_t remaining = payload_length - fragment_size;
-            char discard_buffer[1024];
-            while (remaining > 0) {
-                size_t to_discard = (remaining < sizeof(discard_buffer)) ? remaining : sizeof(discard_buffer);
-                bytes_received = recv(ctx->socket, discard_buffer, to_discard, 0);
-                if (bytes_received <= 0) {
-                    break;
+        // Handle the specific control frame
+        switch(opcode) {
+            case WS_OPCODE_PING:
+                logToFile2("MWS: Handled PING frame. Sending PONG.\n");
+                if (ws_send(ctx, (char*)frame_buffer, (size_t)payload_length, WS_OPCODE_PONG) != 0) {
+                     logToFile2("MWS: Failed to send PONG response.\n");
+                     result_status = -1; // Mark as error
                 }
-                remaining -= bytes_received;
-            }
+                // result_status remains 1 if ws_send succeeded
+                break;
+
+            case WS_OPCODE_PONG:
+                logToFile2("MWS: Handled PONG frame.\n");
+                // result_status remains 1
+                break;
+
+            case WS_OPCODE_CLOSE:
+                logToFile2("MWS: Handled CLOSE frame from server.\n");
+                uint16_t received_code = 1005; char reason_buffer[124] = {0};
+                if (payload_length >= 2) { memcpy(&received_code, frame_buffer, 2); received_code = ntohs(received_code); }
+                if (payload_length > 2) { size_t reason_len = min(payload_length - 2, sizeof(reason_buffer) - 1); memcpy(reason_buffer, frame_buffer + 2, reason_len); }
+                char logMsg[200]; snprintf(logMsg, sizeof(logMsg), "MWS: Server close code: %d, Reason: %s\n", received_code, reason_buffer); logToFile2(logMsg);
+                // ws_close will be called outside the switch based on result_status
+                result_status = -1; // Indicate connection should close
+                break;
         }
+
+        // If handling failed or it was CLOSE, ensure connection is closed
+        if (result_status == -1 && ctx->state == WS_STATE_OPEN) {
+            ws_close(ctx);
+        }
+        return result_status; // Return 1 (handled ok) or -1 (error/closed)
+
+    } else {
+        // Peek showed a non-control frame, do nothing.
+        logToFile2("MWS: Peeked non-control frame. Leaving for ws_recv.\n");
+        return 0;
+    }
+}
+
+//------------------------------------------------------------------------------
+// Function: ws_service
+//
+// Regularly called to service the WebSocket connection. Checks for and handles
+// incoming control frames (PING, PONG, CLOSE). Sends periodic PING frames.
+// Returns 0 on success, -1 on error or if connection closed.
+//------------------------------------------------------------------------------
+int ws_service(ws_ctx* ctx) {
+    logToFile2("MWS: Servicing WebSocket connection...\n");
+
+    if (!ctx || ctx->socket == INVALID_SOCKET) {
+        logToFile2("MWS: Invalid context or socket in ws_service\n");
+        return -1;
+    }
+    if (ctx->state != WS_STATE_OPEN) {
+         logToFile2("MWS: ws_service called but state is not OPEN.\n");
+         // Return 0 if CLOSING, -1 if already CLOSED or other invalid state?
+         return (ctx->state == WS_STATE_CLOSING) ? 0 : -1;
     }
 
-    char logBuffer2[256];
-    snprintf(logBuffer2, sizeof(logBuffer2), "Received %zu bytes in total\n", total_received);
-    logToFile2(logBuffer2);
-    return total_received;
+    // Check for and handle any incoming control frame
+    int handle_result = ws_handle_control_frame(ctx);
+    if (handle_result == -1) {
+        logToFile2("MWS: ws_handle_control_frame indicated error or closure.\n");
+        return -1; // Error or connection closed during control frame handling
+    }
+    // If handle_result was 1, a control frame was handled successfully.
+    // If handle_result was 0, no control frame was pending.
+
+    // Send periodic PING frames if enabled and interval elapsed
+    if (ctx->ping_interval > 0) {
+        time_t current_time = time(NULL);
+        if (current_time - ctx->last_ping_time >= ctx->ping_interval) {
+            logToFile2("MWS: Sending periodic PING frame.\n");
+            // Use ws_send to send a masked PING frame (payload optional, empty here)
+            if (ws_send(ctx, NULL, 0, WS_OPCODE_PING) != 0) {
+                logToFile2("MWS: Failed to send PING frame.\n");
+                ws_close(ctx); // Close if we can't send PING
+                return -1;
+            }
+            ctx->last_ping_time = current_time;
+            logToFile2("MWS: PING frame sent successfully.\n");
+        }
+    }
+    
+    return 0; // Service check completed without closing the connection
 }
 
 //------------------------------------------------------------------------------
@@ -567,78 +742,86 @@ int ws_close(ws_ctx* ctx) {
         return -1;
     }
 
+    // Only send close frame if connection was OPEN
     if (ctx->state == WS_STATE_OPEN) {
+        ctx->state = WS_STATE_CLOSING; // Change state first
+        logToFile2("MWS: State changed to CLOSING.\n");
+
         uint8_t close_frame[6];  // 2 bytes header + 4 bytes mask key (payload length is 2)
-        close_frame[0] = 0x88;
-        close_frame[1] = 0x82;  // Set masked bit (0x80) and payload length 2
+        close_frame[0] = 0x88; // FIN + CLOSE opcode
+        close_frame[1] = 0x82; // Set masked bit (0x80) and payload length 2
         uint32_t mask = generate_mask();
         memcpy(close_frame + 2, &mask, 4);
-        
-        uint16_t status_code = htons(1000);
+
+        uint16_t status_code = htons(1000); // Normal closure
         uint8_t payload[2];
         memcpy(payload, &status_code, 2);
-        
-        // Apply masking to the payload with our helper function.
+
+        // Apply masking to the payload
         apply_mask(payload, 2, mask);
 
+        // Send the close frame (header + payload)
         if (send(ctx->socket, (char*)close_frame, 6, 0) != 6 ||
             send(ctx->socket, (char*)payload, 2, 0) != 2) {
-            logToFile2("MWS: Failed to send close frame\n");
-            goto force_close;
+            logToFile2("MWS: Failed to send close frame, forcing close.\n");
+            // Proceed to force_close even if send fails
+        } else {
+            logToFile2("MWS: Client CLOSE frame sent.\n");
+             // Optional: Wait briefly for server's CLOSE frame (best effort)
+             // This part makes the close slightly less abrupt but isn't strictly
+             // required if immediate cleanup is preferred.
+             // unsigned long nb_mode = 1, b_mode = 0;
+             // struct timeval tv = {0, 100000}; // 100ms timeout
+             // fd_set readfds;
+             // FD_ZERO(&readfds); FD_SET(ctx->socket, &readfds);
+             // ioctlsocket(ctx->socket, FIONBIO, &nb_mode);
+             // if (select(ctx->socket + 1, &readfds, NULL, NULL, &tv) > 0) {
+             //     char response[32];
+             //     recv(ctx->socket, response, sizeof(response), 0); // Attempt to consume server close
+             //     logToFile2("MWS: Consumed potential server CLOSE frame response.\n");
+             // }
+             // ioctlsocket(ctx->socket, FIONBIO, &b_mode);
         }
-
-        ctx->state = WS_STATE_CLOSING;
-        logToFile2("MWS: Close frame sent, waiting for server close frame...\n");
-
-        DWORD timeout = 5000; // 5-second timeout for receiving the server's close frame
-        setsockopt(ctx->socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-
-        char response[32];
-        int received = recv(ctx->socket, response, sizeof(response), 0);
-
-        if (received > 0 && (response[0] & 0x0F) == 0x08) {
-            logToFile2("MWS: Received close frame from server\n");
-            
-            if (received >= 4) {
-                uint16_t received_code;
-                memcpy(&received_code, &response[2], 2);
-                received_code = ntohs(received_code);
-                char logMsg[100];
-                snprintf(logMsg, sizeof(logMsg), "MWS: Server close frame status code: %d\n", received_code);
-                logToFile2(logMsg);
-            }
-        }
-
-        if (shutdown(ctx->socket, SD_SEND) == 0) {
-            char buffer[1024];
-            fd_set readfds;
-            struct timeval tv = {3, 0}; // 3-second timeout
-
-            FD_ZERO(&readfds);
-            FD_SET(ctx->socket, &readfds);
-
-            while (select(ctx->socket + 1, &readfds, NULL, NULL, &tv) > 0) {
-                if (recv(ctx->socket, buffer, sizeof(buffer), 0) <= 0) {
-                    break;
-                }
-            }
-        }
+    } else if (ctx->state == WS_STATE_CLOSING) {
+        logToFile2("MWS: ws_close called while already closing.\n");
+    } else {
+         logToFile2("MWS: ws_close called but state was not OPEN or CLOSING.\n");
     }
 
-force_close:
-    closesocket(ctx->socket);
-    ctx->socket = INVALID_SOCKET;
+    // --- Force Close Section ---
+    // This part executes regardless of the initial state or send success,
+    // ensuring the socket is closed and resources are freed.
+
+    // Perform TCP-level shutdown if socket is valid
+    if (ctx->socket != INVALID_SOCKET) {
+        logToFile2("MWS: Shutting down socket...\n");
+        // Graceful shutdown attempt (SD_SEND) - ignore errors
+        shutdown(ctx->socket, SD_SEND);
+
+        // Optional: Consume remaining data to facilitate TCP close
+        // char buffer[1024];
+        // unsigned long nb_mode = 1, b_mode = 0;
+        // ioctlsocket(ctx->socket, FIONBIO, &nb_mode);
+        // while (recv(ctx->socket, buffer, sizeof(buffer), 0) > 0); // Consume loop
+        // ioctlsocket(ctx->socket, FIONBIO, &b_mode);
+
+        // Close the socket descriptor
+        closesocket(ctx->socket);
+        ctx->socket = INVALID_SOCKET;
+        logToFile2("MWS: Socket closed.\n");
+    }
+
+    // Final state update
     ctx->state = WS_STATE_CLOSED;
-    
-    logToFile2("MWS: WebSocket connection closed\n");
+    logToFile2("MWS: State set to CLOSED.\n");
     return 0;
 }
 
 //------------------------------------------------------------------------------
 // Function: ws_fail_connection
 //
-// Sends a CLOSE frame with the given status code and an optional reason
-// and then immediately closes the connection.
+// Initiates the closing handshake by sending a masked CLOSE frame (status code 1000)
+// and then performs an orderly shutdown.
 //------------------------------------------------------------------------------
 int ws_fail_connection(ws_ctx* ctx, uint16_t status_code, const char* reason) {
     logToFile2("MWS: Failing WebSocket connection...\n");
@@ -690,7 +873,7 @@ force_close:
 //------------------------------------------------------------------------------
 // Function: ws_destroy_ctx
 //
-// Frees the WebSocket context including its receive buffer.
+// Frees the memory allocated for the WebSocket context.
 //------------------------------------------------------------------------------
 void ws_destroy_ctx(ws_ctx* ctx) {
     if (ctx) {
@@ -713,7 +896,7 @@ void ws_cleanup(void) {
 //------------------------------------------------------------------------------
 // Function: ws_get_state
 //
-// Returns the current WebSocket connection state.
+// Returns the current state of the WebSocket connection.
 //------------------------------------------------------------------------------
 ws_state ws_get_state(ws_ctx* ctx) {
     return ctx->state;
@@ -722,8 +905,7 @@ ws_state ws_get_state(ws_ctx* ctx) {
 //------------------------------------------------------------------------------
 // Function: print_hex2
 //
-// Utility function to print a byte array in hexadecimal format.
-// (The actual printing code is commented out.)
+// Prints the contents of a buffer in hexadecimal format.
 //------------------------------------------------------------------------------
 void print_hex2(const uint8_t* data, size_t length) {
     for (size_t i = 0; i < length; i++) {
@@ -731,146 +913,6 @@ void print_hex2(const uint8_t* data, size_t length) {
         if ((i + 1) % 16 == 0) { /* newline */ }
     }
     // End of hex dump.
-}
-
-//------------------------------------------------------------------------------
-// Function: ws_handle_ping
-//
-// Handles an incoming PING frame. It peeks at the header to determine the 
-// length (including the possibility of extended payload lengths) and then
-// reads the full frame. Once received, it sends a PONG frame echoing the same
-// payload. If the PING frame happens to be masked (which it normally should not
-// be from a server), the payload is unmasked first.
-//------------------------------------------------------------------------------
-static int ws_handle_ping(ws_ctx* ctx) {
-    logToFile2("MWS: Handling ping frame...\n");
-
-    uint8_t header[2];
-    int bytes_received = recv(ctx->socket, (char*)header, 2, MSG_PEEK);
-    if (bytes_received != 2) {
-        logToFile2("MWS: Failed to peek ping frame header\n");
-        return -1;
-    }
-    uint8_t payload_len_indicator = header[1] & 0x7F;
-    size_t header_size = 2;
-    uint64_t payload_length = payload_len_indicator;
-    if (payload_len_indicator == 126) {
-        header_size += 2;
-        uint16_t ext_len;
-        bytes_received = recv(ctx->socket, (char*)&ext_len, 2, MSG_PEEK);
-        if (bytes_received != 2) {
-            logToFile2("MWS: Failed to peek extended length (16-bit)\n");
-            return -1;
-        }
-        payload_length = ntohs(ext_len);
-    } else if (payload_len_indicator == 127) {
-        header_size += 8;
-        uint64_t ext_len;
-        bytes_received = recv(ctx->socket, (char*)&ext_len, 8, MSG_PEEK);
-        if (bytes_received != 8) {
-            logToFile2("MWS: Failed to peek extended length (64-bit)\n");
-            return -1;
-        }
-        payload_length = ntohll(ext_len);
-    }
-    // Check if the frame is masked (server frames should not be masked, but we handle it if so)
-    bool masked = (header[1] & 0x80) != 0;
-    if (masked) {
-        header_size += 4;
-    }
-    size_t frame_size = header_size + payload_length;
-    uint8_t* frame_buffer = (uint8_t*)malloc(frame_size);
-    if (!frame_buffer) {
-        logToFile2("MWS: Failed to allocate memory for ping frame buffer\n");
-        return -1;
-    }
-    bytes_received = recv(ctx->socket, (char*)frame_buffer, frame_size, 0);
-    if (bytes_received != frame_size) {
-        logToFile2("MWS: Failed to read complete ping frame\n");
-        free(frame_buffer);
-        return -1;
-    }
-    if (masked) {
-        uint32_t mask;
-        memcpy(&mask, frame_buffer + header_size - 4, 4);
-        apply_mask(frame_buffer + header_size, payload_length, mask);
-    }
-    logToFile2("MWS: Received ping frame. Sending pong response...\n");
-    // Use ws_send to send a masked pong frame with the same payload.
-    int ret = ws_send(ctx, (char*)(frame_buffer + header_size), payload_length, WS_OPCODE_PONG);
-    free(frame_buffer);
-    return ret;
-}
-
-//------------------------------------------------------------------------------
-// Function: ws_service
-//
-// Regularly called to service the WebSocket connection (handling control frames).
-// It checks for PING, PONG, and CLOSE, and also sends periodic PING frames if needed.
-//------------------------------------------------------------------------------
-int ws_service(ws_ctx* ctx) {
-    logToFile2("MWS: Servicing WebSocket connection for ping/pong...\n");
-
-    if (!ctx || ctx->socket == INVALID_SOCKET) {
-        logToFile2("MWS: Invalid context or socket in ws_service\n");
-        return -1;
-    }
-
-    // First, check for incoming control frames with non-blocking peek
-    uint8_t header[2];
-    int flags = MSG_PEEK;  // Just use peek without MSG_DONTWAIT (Windows doesn't have it)
-    int bytes_received = recv(ctx->socket, (char*)header, 2, flags);
-    
-    if (bytes_received > 0) {
-        int opcode = header[0] & 0x0F;
-        switch(opcode) {
-            case WS_OPCODE_PING:
-                logToFile2("MWS: Received ping frame\n");
-                return ws_handle_ping(ctx);
-            case WS_OPCODE_PONG:
-                logToFile2("MWS: Received pong frame\n");
-                {
-                    uint8_t payload_length = header[1] & 0x7F;
-                    char discard[256];
-                    // Consume the pong frame from the socket.
-                    recv(ctx->socket, discard, 2 + payload_length, 0);
-                }
-                return 0;
-            case WS_OPCODE_CLOSE:
-                logToFile2("MWS: Received close frame\n");
-                recv(ctx->socket, (char*)header, 2, 0);
-                ws_close(ctx);
-                return -1;
-        }
-    } else if (bytes_received == -1) {
-        int error = WSAGetLastError();
-        if (error != WSAEWOULDBLOCK && error != WSAEINPROGRESS) {
-            // Real error occurred
-            char errMsg[256];
-            snprintf(errMsg, sizeof(errMsg), "MWS: Socket error during service: %d\n", error);
-            logToFile2(errMsg);
-            return -1;
-        }
-        // WSAEWOULDBLOCK means no data available, which is normal
-    }
-
-    // Send periodic ping frames if the time interval has elapsed
-    // Only do this if ping_interval is set (greater than 0)
-    if (ctx->ping_interval > 0) {
-        time_t current_time = time(NULL);
-        if (current_time - ctx->last_ping_time >= ctx->ping_interval) {
-            logToFile2("MWS: Sending periodic ping frame\n");
-            uint8_t ping_frame[] = { 0x89, 0x00 };  // 0x89: FIN + PING opcode, 0x00: no payload
-            if (send(ctx->socket, (char*)ping_frame, sizeof(ping_frame), 0) != sizeof(ping_frame)) {
-                logToFile2("MWS: Failed to send ping frame\n");
-                return -1;
-            }
-            ctx->last_ping_time = current_time;
-            logToFile2("MWS: Ping frame sent successfully\n");
-        }
-    }
-    
-    return 0;
 }
 
 //------------------------------------------------------------------------------
@@ -1007,8 +1049,7 @@ int ws_check_connection(ws_ctx* ctx) {
     return 1;
 }
 
-//---------- NOT WORKING YET, ctx->ping_interval , ctx->last_ping_time arn't used anywhere ---
-// --------------------------------------------------------------------
+//------------------------------------------------------------------------------
 // Function: ws_set_ping_pong
 //
 // Enables or disables automatic ping/pong handling for the WebSocket connection.
@@ -1041,4 +1082,183 @@ int ws_set_ping_pong(ws_ctx* ctx, int interval) {
     logToFile2(logMsg);
     
     return 0;
+}
+
+//------------------------------------------------------------------------------
+// Function: ws_recv
+// Peeks, leaves control frames, consumes data frames (blocking reads).
+//------------------------------------------------------------------------------
+int ws_recv(ws_ctx* ctx, char* buffer, size_t buffer_size) {
+    logToFile2("MWS: ws_recv attempting to receive data frame...\n");
+
+    if (ctx->state != WS_STATE_OPEN) {
+        logToFile2("MWS: ws_recv called but state is not OPEN.\n");
+        return -1;
+    }
+
+    size_t total_received_in_buffer = 0;
+    bool final_fragment = false;
+
+    // Loop until a final data fragment is processed or the buffer is full
+    while (!final_fragment && total_received_in_buffer < buffer_size) {
+        
+        // --- Peek at the next frame header ---
+        uint8_t peek_header[2];
+        int peek_bytes = recv(ctx->socket, (char*)peek_header, 2, MSG_PEEK);
+
+        if (peek_bytes == SOCKET_ERROR) {
+            int error = WSAGetLastError();
+            if (error == WSAEWOULDBLOCK || error == WSAEINPROGRESS) {
+                // No data available right now, return whatever we have accumulated (or 0)
+                logToFile2("MWS: ws_recv peek WSAEWOULDBLOCK/WSAEINPROGRESS.\n");
+                return total_received_in_buffer; 
+            } else {
+                char errMsg[256];
+                snprintf(errMsg, sizeof(errMsg), "MWS: ws_recv peek failed: %d\n", error);
+                logToFile2(errMsg);
+                ws_close(ctx); // Close on socket error
+                return -1;
+            }
+        } else if (peek_bytes == 0) {
+            // Connection closed gracefully by peer during peek
+            logToFile2("MWS: ws_recv peek detected connection closed by peer.\n");
+            ws_close(ctx);
+            return (total_received_in_buffer > 0) ? total_received_in_buffer : -1; // Return data if any, else -1
+        } else if (peek_bytes != 2) {
+            // Should not happen with TCP, but handle defensively
+            logToFile2("MWS: ws_recv peek unexpected byte count.\n");
+            ws_close(ctx);
+            return -1;
+        }
+
+        // --- Check Opcode from Peek ---
+        int opcode = peek_header[0] & 0x0F;
+        logToFile2("MWS: ws_recv peeked opcode ");
+        logToFileI2(opcode);
+
+        // If it's a control frame, leave it for ws_service and return 0 (no app data received)
+        if (opcode == WS_OPCODE_PING || opcode == WS_OPCODE_PONG || opcode == WS_OPCODE_CLOSE) {
+            logToFile2("MWS: ws_recv peeked control frame. Returning 0, leaving for ws_service.\n");
+            // Return any data already accumulated in buffer from previous fragments in *this call*
+            return total_received_in_buffer; 
+        }
+
+        // --- It's a Data Frame (or unknown) - Consume and Process ---
+        uint8_t actual_header[2];
+        int bytes_read = recv(ctx->socket, (char*)actual_header, 2, 0); // Consume the peeked header
+        
+        if (bytes_read <= 0) { // Handle error or close that might occur between peek and read
+            logToFile2("MWS: ws_recv error/close consuming header after peek.\n");
+            ws_close(ctx);
+             return (total_received_in_buffer > 0) ? total_received_in_buffer : -1;
+        }
+
+        final_fragment = (actual_header[0] & 0x80) != 0;
+        opcode = actual_header[0] & 0x0F; // Re-read opcode from consumed header
+        bool masked = (actual_header[1] & 0x80) != 0; 
+        uint64_t payload_length = actual_header[1] & 0x7F;
+        
+        char logBuffer[256];
+        snprintf(logBuffer, sizeof(logBuffer), "Frame Header (Consumed): final=%d, opcode=0x%X, masked=%d, len_indicator=%llu\n",
+                final_fragment, opcode, masked, payload_length);
+        logToFile2(logBuffer);
+
+        if (masked) {
+            logToFile2("MWS: Warning - Received masked frame from server (violates RFC 6455 Section 5.1).\n");
+        }
+
+        // Read extended payload length if necessary
+        if (payload_length == 126) {
+            uint16_t extended_length;
+            bytes_read = recv(ctx->socket, (char*)&extended_length, 2, 0);
+            if (bytes_read != 2) { logToFile2("MWS: Failed to read 16-bit ext len.\n"); ws_close(ctx); return -1; }
+            payload_length = ntohs(extended_length);
+        } else if (payload_length == 127) {
+            uint64_t extended_length;
+            bytes_read = recv(ctx->socket, (char*)&extended_length, 8, 0);
+            if (bytes_read != 8) { logToFile2("MWS: Failed to read 64-bit ext len.\n"); ws_close(ctx); return -1; }
+            payload_length = ntohll(extended_length);
+        }
+
+        // Read mask key if present
+        uint32_t mask_key = 0;
+        if (masked) {
+            bytes_read = recv(ctx->socket, (char*)&mask_key, 4, 0);
+            if (bytes_read != 4) { logToFile2("MWS: Failed to read mask key.\n"); ws_close(ctx); return -1; }
+        }
+        
+        snprintf(logBuffer, sizeof(logBuffer), "Frame Details (Consumed): final=%d, opcode=0x%X, masked=%d, payload_length=%llu\n",
+                final_fragment, opcode, masked, payload_length);
+        logToFile2(logBuffer);
+
+        // Process Data Frame (TEXT, BINARY, CONTINUATION)
+        if (opcode == WS_OPCODE_TEXT || opcode == WS_OPCODE_BINARY || opcode == WS_OPCODE_CONTINUATION) {
+             if (payload_length == 0) {
+                 // Empty data frame
+                 logToFile2("MWS: Consumed empty data frame.\n");
+                 if (final_fragment) break; // If final empty fragment, we are done.
+                 else continue; // If intermediate empty fragment, loop for next.
+             }
+
+             size_t remaining_buffer_space = buffer_size - total_received_in_buffer;
+             size_t bytes_to_read_into_buffer = (payload_length < remaining_buffer_space) ? (size_t)payload_length : remaining_buffer_space;
+             size_t bytes_to_discard = (payload_length > bytes_to_read_into_buffer) ? (size_t)(payload_length - bytes_to_read_into_buffer) : 0;
+
+             // Read the data that fits into the buffer
+             if (bytes_to_read_into_buffer > 0) {
+                size_t current_payload_bytes_read = 0;
+                while (current_payload_bytes_read < bytes_to_read_into_buffer) {
+                    bytes_read = recv(ctx->socket, 
+                                      buffer + total_received_in_buffer + current_payload_bytes_read, 
+                                      bytes_to_read_into_buffer - current_payload_bytes_read, 
+                                      0);
+                    if (bytes_read <= 0) { // Error or connection closed during payload read
+                        logToFile2("MWS: Error/close while reading data payload.\n");
+                        ws_close(ctx);
+                        return (total_received_in_buffer > 0) ? total_received_in_buffer : -1;
+                    }
+                    current_payload_bytes_read += bytes_read;
+                }
+
+                // Unmask the data *in the user buffer* if necessary
+                if (masked) {
+                    apply_mask((uint8_t*)(buffer + total_received_in_buffer), bytes_to_read_into_buffer, mask_key);
+                }
+                total_received_in_buffer += bytes_to_read_into_buffer;
+             }
+
+             // Discard any remaining payload that didn't fit
+             if (bytes_to_discard > 0) {
+                 logToFile2("MWS: Data frame payload exceeds buffer size. Discarding extra bytes.\n");
+                 char discard_buf[1024];
+                 uint64_t remaining_to_discard = bytes_to_discard;
+                 while (remaining_to_discard > 0) {
+                    size_t discard_now = (remaining_to_discard < sizeof(discard_buf)) ? (size_t)remaining_to_discard : sizeof(discard_buf);
+                    bytes_read = recv(ctx->socket, discard_buf, discard_now, 0);
+                    if (bytes_read <= 0) { // Error or connection closed during discard
+                         logToFile2("MWS: Error/close while discarding excess data payload.\n");
+                         ws_close(ctx);
+                         return (total_received_in_buffer > 0) ? total_received_in_buffer : -1;
+                    }
+                    remaining_to_discard -= bytes_read;
+                 }
+             }
+        } else {
+            // Should not happen if peek check worked, but handle defensively
+             logToFile2("MWS: Consumed frame with unexpected opcode after peek. Closing.\n");
+             ws_close(ctx); // Initiate close on protocol error
+             return -1;
+        }
+        
+        // If the buffer is full but this wasn't the final fragment, break the loop.
+        if (total_received_in_buffer >= buffer_size && !final_fragment) {
+            logToFile2("MWS: Receive buffer full, but message is fragmented. Returning current data.\n");
+            break; 
+        }
+    } // End while loop for fragments
+
+    char logBuffer2[256];
+    snprintf(logBuffer2, sizeof(logBuffer2), "MWS: ws_recv finished. Returning %zu bytes.\n", total_received_in_buffer);
+    logToFile2(logBuffer2);
+    return total_received_in_buffer; // Return the number of bytes actually placed in the buffer
 }
