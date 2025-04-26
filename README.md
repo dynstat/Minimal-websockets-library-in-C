@@ -13,7 +13,7 @@ A simple WebSocket client library implemented in C for Windows using Winsock2. T
 
 This project is a Visual Studio solution containing two projects:
 
-1. **mws_lib**: A static library project for the WebSocket implementation.
+1. **mws_lib**: A static library project for the WebSocket implementation (Main Project).
 2. **test-mws**: A test project to demonstrate the usage of the WebSocket library.
 
 ### Key Files
